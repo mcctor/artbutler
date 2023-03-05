@@ -1,11 +1,12 @@
 use std::collections::HashMap;
-use std::ops::Sub;
+use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::Client;
-use tokio::{spawn, sync::mpsc::{self, Receiver}, time::{Instant, sleep_until}};
+use tokio::{spawn, sync::mpsc::{channel, Receiver}};
 use tokio::sync::mpsc::Sender;
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tokio::time::{Instant, sleep_until};
 
 use crate::{
     content::Post,
@@ -13,148 +14,97 @@ use crate::{
 };
 use crate::listings::reddit::Seek;
 
-type CuratorTasks = Vec<(Subreddit, Listing, Option<JoinHandle<()>>)>;
+pub type Listeners = HashMap<String, Vec<JoinHandle<()>>>;
+
+pub const SYNC_INTERVAL_MAX: u64 = 254;
+pub const SYNC_INTERVAL_DEFAULT: u64 = 1;
+pub const QUERY_RESULT_LIMIT: u8 = 5;
+
 
 pub trait Curator {
     fn receiver(&mut self) -> &mut Receiver<Post>;
 }
 
-#[derive(Clone, Copy)]
-pub struct CuratorConfig {
-    pub sync_interval: Duration,
-    pub result_limit_per_cycle: u8,
-}
-
 pub struct RedditCurator {
-    cli: Client,
-    tasks: CuratorTasks,
-    conf: CuratorConfig,
-    listeners: HashMap<String, Vec<JoinHandle<()>>>,
-    tx: Sender<Post>,
-    rcv: Receiver<Post>,
+    api: Arc<Mutex<Reddit>>,
+    tasks: Listeners,
+    chan: (Sender<Post>, Receiver<Post>),
 }
 
 impl RedditCurator {
-    pub fn from(conf: CuratorConfig) -> Self {
-        let (tx, rcv) = mpsc::channel(10);
+    pub fn from(api: Reddit) -> Self {
+        let (tx, rcv) = channel(10);
+        let api = Arc::new(Mutex::new(api));
         RedditCurator {
-            cli: Client::new(),
-            tasks: Vec::new(),
-            conf,
-            listeners: HashMap::new(),
-            tx,
-            rcv,
+            api,
+            tasks: HashMap::new(),
+            chan: (tx, rcv),
         }
     }
 
-    pub fn register_task(&mut self, from_src: Subreddit, of: Listing) {
-        let task = Self::exec_retrieval_task(
-            self.cli.clone(),
-            self.tx.clone(),
-            from_src.clone(),
-            of.clone(),
-        );
-        let task = spawn(task);
-        self.tasks.push((from_src, of, Some(task)));
-    }
-
     pub fn attach_update_listener(&mut self, sub: Subreddit) {
-        let cli = self.cli.clone();
-        let tx = self.tx.clone();
+        let tx = self.chan.0.clone();
         let subreddit = sub.clone();
+        let api = self.api.clone();
 
         let mut listing = Listing::New {
             params: PaginationArg {
-                cursor_anchor: Seek::Before { post_id: "null".to_string() },
-                limit: self.conf.result_limit_per_cycle,
+                cursor_anchor: Seek::Before { post: Post::empty() },
+                limit: QUERY_RESULT_LIMIT,
                 seen_count: 0,
                 show_rules: "null".to_string(),
             }
         };
 
-        let sync_interval = self.conf.sync_interval;
-        let listener_future = async move {
+        let mut sync_interval = SYNC_INTERVAL_DEFAULT as u64;
+        let listener = async move {
             loop {
-                let task = Reddit::retrieve_posts(
-                    &cli,
-                    &subreddit,
-                    &mut listing,
-                );
-                let mut synced_posts = task.await;
+                let mut synced_posts = vec![];
+                {
+                    let mut guard = api.lock().await;
+                    let task = guard.retrieve_posts(
+                        &subreddit,
+                        &mut listing,
+                    );
+
+                    let post_res = task.await;
+                    if post_res.is_err() {
+                        continue;
+                    }
+                    synced_posts.append(&mut post_res.unwrap())
+                }
+
                 if synced_posts.len() != 0 {
                     synced_posts.reverse();
                     for post in synced_posts {
                         tx.send(post).await.unwrap();
                     }
+                    sync_interval = SYNC_INTERVAL_DEFAULT;
+
+                } else {
+                    if sync_interval < SYNC_INTERVAL_MAX {
+                        sync_interval = sync_interval * 2;
+                    }
                 }
-                // TODO: Adopt sleep time according to number of retries with no results
-                sleep_until(Instant::now() + sync_interval).await;
+                sleep_until(Instant::now() + Duration::from_secs(sync_interval)).await;
             }
         };
-        let listener = spawn(listener_future);
 
-        if let Some(v) = self.listeners.get_mut(sub.name().as_str()) {
-            v.push(listener);
+        let listener_task = spawn(listener);
+        if let Some(v) = self.tasks.get_mut(sub.name().as_str()) {
+            v.push(listener_task);
         } else {
-            self.listeners.insert(sub.name(), vec![listener]);
+            self.tasks.insert(sub.name(), vec![listener_task]);
         }
     }
 
     pub fn detach_listeners(&mut self, sub: Subreddit) {
         todo!();
     }
-
-    pub fn clear_all_tasks(&mut self, for_sub: &Subreddit) {
-        let mut idx_found = vec![];
-        let mut cnt = -1;
-
-        loop {
-            let mut task_iter = self.tasks.iter_mut();
-            if let Some(index) =
-                task_iter.position(|(sub, _, _)| {
-                    if *for_sub == *sub {
-                        true
-                    } else {
-                        false
-                    }
-                })
-            {
-                idx_found.push(index);
-                cnt += 1;
-            } else {
-                break;
-            };
-
-            self.tasks.swap_remove(idx_found[cnt as usize]);
-        }
-    }
-
-    async fn exec_retrieval_task(
-        cli: Client,
-        tx: Sender<Post>,
-        sub: Subreddit,
-        mut listing: Listing,
-    ) {
-        loop {
-            let task = Reddit::retrieve_posts(
-                &cli,
-                &sub,
-                &mut listing,
-            );
-            let mut awaited_posts = task.await;
-            if awaited_posts.len() == 0 {
-                break;
-            }
-            awaited_posts.reverse();
-            for post in awaited_posts {
-                tx.send(post).await.unwrap();
-            }
-        }
-    }
 }
 
 impl Curator for RedditCurator {
     fn receiver(&mut self) -> &mut Receiver<Post> {
-        &mut self.rcv
+        &mut self.chan.1
     }
 }

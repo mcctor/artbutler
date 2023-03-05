@@ -1,45 +1,105 @@
-use std::vec;
 use std::collections::HashMap;
+use std::time::Duration;
+use std::{env, vec};
+use dotenvy::dotenv;
 
-use reqwest::{Client, Response};
+use reqwest::{Result, Client, Response};
 use serde_json::Value;
+use tokio::time::Instant;
 
 use crate::content::{Post, VoteCount};
 
 pub const REDDIT_USER_AGENT: &str = "windows:com.example.artbutler:v0.0.1 (by /u/mcctor)";
 
-pub struct Reddit;
+enum AuthenticationToken {
+    New,
+    Refresh,
+}
+
+#[derive(Debug, Clone)]
+pub struct BearerToken {
+    token: String,
+    expires: Instant,
+}
+
+#[derive(Debug)]
+pub struct Reddit {
+    cli: Client,
+    has_token: Option<BearerToken>,
+}
 
 impl Reddit {
-    pub async fn retrieve_posts(
-        cli: &Client,
-        subreddit: &Subreddit,
-        listing: &mut Listing,
-    ) -> Vec<Post> {
-        match Self::request_listing(cli, subreddit, &listing).await {
-            Ok(resp) => {
-                let result_count = listing.result_limit();
-                let posts = Self::serialize(resp, result_count).await;
-                if posts.len() != 0 {
-                    listing.update_paginator(&posts);
-                }
-                posts
-            }
-            Err(_) => {
-                vec![]
-            }
-        }
+    pub fn new() -> Self {
+        Reddit { cli: Client::new(), has_token: None }
     }
 
-    async fn request_listing(
-        cli: &Client,
-        subreddit: &Subreddit,
-        listing: &Listing,
-    ) -> reqwest::Result<Response> {
-        cli.get(listing.endpoint_for(subreddit))
+    async fn authenticate(&mut self, auth_option: AuthenticationToken) -> Result<&BearerToken> {
+        dotenv().expect("no .env file found");
+
+        let client_id = env::var("CLIENT_ID").expect("CLIENT_ID not provided");
+        let secret = env::var("SECRET").expect("SECRET not provided");
+        let username = env::var("USER_NAME").expect("USERNAME not provided");
+        let pass = env::var("PASSWORD").expect("PASSWORD not provided");
+
+        let mut args = String::new();
+        match auth_option {
+            AuthenticationToken::New => {
+                let params = format!(
+                    "?grant_type=password&username={}&password={}",
+                    username,
+                    pass
+                );
+                args.push_str(params.as_str());
+            }
+            AuthenticationToken::Refresh => {
+                let params = format!(
+                    "?grant_type=refresh_token&refresh_token={}",
+                    self.has_token.as_ref().unwrap().token
+                );
+                args.push_str(params.as_str());
+            }
+        }
+        let url = format!("https://www.reddit.com/api/v1/access_token{}", args);
+        let res = self.cli.post(url)
+            .basic_auth(client_id, Some(secret))
             .header("User-Agent", REDDIT_USER_AGENT)
-            .send()
-            .await
+            .send().await?;
+
+        let value = res.json::<Value>().await?;
+        let token = Some(BearerToken {
+            token: value["access_token"].as_str().unwrap().to_string(),
+            expires: Instant::now() + Duration::from_secs(value["expires_in"].as_u64().unwrap()),
+        });
+        self.has_token = token;
+        Ok(self.has_token.as_ref().unwrap())
+    }
+
+    pub async fn retrieve_posts(&mut self, sub: &Subreddit, listing: &mut Listing) -> Result<Vec<Post>> {
+        let resp = self.request_listing(sub, listing).await?;
+        let res_cnt = listing.result_limit();
+        let posts = Reddit::serialize(resp, res_cnt).await;
+        if posts.len() != 0 {
+            listing.update_paginator(&posts);
+        }
+        Ok(posts)
+    }
+
+    async fn request_listing(&mut self, sub: &Subreddit, listing: &Listing) -> Result<Response> {
+        let req_builder = self.cli.get(listing.endpoint_for(sub));
+        if let Some(t) = self.has_token.as_ref() {
+            if Instant::now() > (t.expires - Duration::from_secs(60)) {
+                self.authenticate(AuthenticationToken::Refresh).await?;
+            }
+        } else {
+            self.authenticate(AuthenticationToken::New).await?;
+        }
+
+        let res = req_builder
+            .bearer_auth(self.has_token.as_ref().unwrap().token.to_string())
+            .header("User-Agent", REDDIT_USER_AGENT)
+            .send().await?;
+
+        Ok(res)
     }
 
     async fn serialize(resp: Response, result_count: u8) -> Vec<Post> {
@@ -49,7 +109,6 @@ impl Reddit {
         };
 
         let mut posts = Vec::new();
-
         for i in 0..result_count {
             let post_raw = &raw_json["data"]["children"][i as usize]["data"];
             let post = Reddit::parse_post(&post_raw);
@@ -58,7 +117,7 @@ impl Reddit {
             }
         }
 
-        return posts;
+        posts
     }
 
     fn parse_post(raw_json: &Value) -> Post {
@@ -80,13 +139,22 @@ impl Reddit {
             Err(_) => 0,
         };
 
+        let post_url = {
+            let perma = raw_json["permalink"].as_str().unwrap_or("");
+            if perma.is_empty() {
+                "".to_string()
+            } else {
+                format!("https://www.reddit.com{}", perma)
+            }
+        };
+
         Post::new(
             fields.remove("id").unwrap(),
+            post_url,
             fields.remove("url").unwrap(),
             fields.remove("author").unwrap(),
             fields.remove("title").unwrap(),
             VoteCount::from(ups, downs),
-            raw_json["num_comments"].to_string().parse().unwrap_or(0),
         )
     }
 
@@ -123,8 +191,8 @@ pub enum Time {
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum Seek {
-    After { post_id: String },
-    Before { post_id: String },
+    After { post: Post },
+    Before { post: Post },
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -136,40 +204,15 @@ pub struct PaginationArg {
 }
 
 impl PaginationArg {
-    pub fn default() -> Self {
+    pub fn seek_back() -> Self {
         PaginationArg {
             cursor_anchor: Seek::After {
-                post_id: "null".to_string(),
+                post: Post::empty(),
             },
             limit: 5,
             seen_count: 0,
             show_rules: "null".to_string(),
         }
-    }
-
-    pub fn seek_forward(&mut self, cursor: Option<String>) {
-        if let Some(post_id) = cursor {
-            self.cursor_anchor = Seek::After { post_id };
-        } else {
-            self.cursor_anchor = Seek::After {
-                post_id: "null".to_string(),
-            };
-        }
-    }
-
-    pub fn seek_backward(&mut self, cursor: Option<String>) {
-        if let Some(post_id) = cursor {
-            self.cursor_anchor = Seek::Before { post_id };
-        } else {
-            self.cursor_anchor = Seek::Before {
-                post_id: "null".to_string(),
-            };
-        }
-    }
-
-    pub fn set_res_limit(&mut self, limit: u8) -> &mut Self {
-        self.limit = limit;
-        self
     }
 }
 
@@ -185,7 +228,7 @@ pub enum Listing {
 impl Listing {
     pub fn endpoint_for(&self, subreddit: &Subreddit) -> String {
         let mut href_buf = String::new();
-        href_buf.push_str(format!("https://api.reddit.com/r/{}/", subreddit.name()).as_str());
+        href_buf.push_str(format!("https://oauth.reddit.com/r/{}/", subreddit.name()).as_str());
 
         match self {
             Self::Hot { params } => {
@@ -216,17 +259,16 @@ impl Listing {
         match self {
             Listing::Random => (),
             listing => {
-                let paginator = listing.paginator();
-                match paginator {
+                match listing.paginator() {
                     PaginationArg { cursor_anchor, .. } => match cursor_anchor {
-                        Seek::After { post_id } => {
+                        Seek::After { post } => {
                             let new_id = with.last().unwrap().id().to_string();
                             if new_id != "ul".to_string() {
-                                *post_id = format!("t3_{}", with.last().unwrap().id().to_string())
+                                *post = with.last().unwrap().clone();
                             }
                         }
-                        Seek::Before { post_id } => {
-                            *post_id = format!("t3_{}", with.first().unwrap().id().to_string())
+                        Seek::Before { post } => {
+                            *post = with.first().unwrap().clone();
                         }
                     },
                 }
@@ -264,12 +306,12 @@ impl Listing {
     fn url_args(&self, pagination_arg: &PaginationArg) -> String {
         let mut buf = String::new();
         match &pagination_arg.cursor_anchor {
-            Seek::After { post_id: id } => {
-                let arg = format!("?after={}", id);
+            Seek::After { post } => {
+                let arg = format!("?after={}", format!("t3_{}", post.id()));
                 buf.push_str(arg.as_str())
             }
-            Seek::Before { post_id: id } => {
-                let arg = format!("?before={}", id);
+            Seek::Before { post } => {
+                let arg = format!("?before={}", format!("t3_{}", post.id()));
                 buf.push_str(arg.as_str())
             }
         };

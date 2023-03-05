@@ -1,13 +1,7 @@
 use std::collections::VecDeque;
-use std::time::Duration;
-
-use tokio::{join, spawn};
-use tokio::sync::mpsc::Receiver;
-use tokio::task::JoinHandle;
 
 use crate::content::Post;
-use crate::curator::{Curator, CuratorConfig, RedditCurator};
-use crate::listings::reddit::{Listing, PaginationArg, Subreddit};
+use crate::curator::{Curator, RedditCurator};
 
 struct FilterRule;
 
@@ -16,13 +10,13 @@ pub struct ClientID(pub u32);
 
 pub struct UserAggregator<'a> {
     id: ClientID,
-    curator: &'a mut RedditCurator,
+    curator: &'a mut dyn Curator,
     cache: VecDeque<Post>,
     filters: Vec<FilterRule>
 }
 
 impl<'a> UserAggregator<'a> {
-    pub fn new(for_client: ClientID, curator: &'a mut RedditCurator) -> UserAggregator {
+    pub fn new(for_client: ClientID, curator: &'a mut dyn Curator) -> UserAggregator<'a> {
         UserAggregator {
             id: for_client,
             curator,
@@ -33,32 +27,13 @@ impl<'a> UserAggregator<'a> {
 
     pub async fn listen(&mut self) {
         let receiver = self.curator.receiver();
-        let mut cnt = 0;
         loop {
             if let Some(post) = receiver.recv().await {
-                cnt += 1;
-                println!("{}: {:?}", cnt, post);
+                println!("{:?}", post);
                 self.cache.push_back(post);
             } else {
                 break;
             }
         }
     }
-}
-
-#[tokio::test]
-async fn test_user_aggregator() {
-    let mut curator = RedditCurator::from(
-        CuratorConfig {
-            sync_interval: Duration::from_secs(5),
-            result_limit_per_cycle: 5
-        }
-    );
-    curator.register_task(Subreddit::from("popular"), Listing::New {
-        params: PaginationArg::default()
-    });
-    curator.attach_update_listener(Subreddit::from("popular"));
-
-    let mut aggr = UserAggregator::new(ClientID(1), &mut curator);
-    aggr.listen().await;
 }

@@ -1,7 +1,7 @@
 use std::fmt;
 
 
-#[derive(Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub struct VoteCount(i32, i32);
 
 impl VoteCount {
@@ -18,32 +18,43 @@ impl VoteCount {
     }
 }
 
-#[derive(Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub struct Post {
     id: String,
+    pub link: String,
     pub media_href: String,
     title: String,
     author: String,
-    comments: Vec<String>,
     votes: VoteCount,
 }
 
 impl Post {
     pub fn new(
         id: String,
+        link: String,
         media_href: String,
         author: String,
         title: String,
         votecount: VoteCount,
-        comment_count: usize,
     ) -> Self {
         Post {
             id,
+            link,
             media_href,
             title,
             author,
-            comments: Vec::with_capacity(comment_count),
             votes: votecount,
+        }
+    }
+
+    pub fn empty() -> Self {
+        Post {
+            id: String::new(),
+            link: String::new(),
+            media_href: String::new(),
+            title: String::new(),
+            author: String::new(),
+            votes: VoteCount(0, 0),
         }
     }
 
