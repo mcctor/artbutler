@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,14 +10,15 @@ use tokio::time::{Instant, sleep_until};
 
 use crate::{
     content::Post,
-    listings::reddit::{Listing, PaginationArg, Reddit, Subreddit},
+    listings::reddit::{Listing, PaginationArg, Reddit, Subreddit, Seek},
 };
-use crate::listings::reddit::Seek;
 
 pub type Listeners = HashMap<String, Vec<JoinHandle<()>>>;
 
 pub const SYNC_INTERVAL_MAX: u64 = 254;
+
 pub const SYNC_INTERVAL_DEFAULT: u64 = 1;
+
 pub const QUERY_RESULT_LIMIT: u8 = 5;
 
 
@@ -42,39 +43,35 @@ impl RedditCurator {
         }
     }
 
-    pub fn attach_update_listener(&mut self, sub: Subreddit) {
+    pub fn attach_listener(&mut self, sub: Subreddit) {
         let tx = self.chan.0.clone();
         let subreddit = sub.clone();
         let api = self.api.clone();
-
-        let mut listing = Listing::New {
-            params: PaginationArg {
-                cursor_anchor: Seek::Before { post: Post::empty() },
-                limit: QUERY_RESULT_LIMIT,
-                seen_count: 0,
-                show_rules: "null".to_string(),
-            }
-        };
-
         let mut sync_interval = SYNC_INTERVAL_DEFAULT as u64;
+
         let listener = async move {
+            let mut timeout_cnt = 0;
+            let mut listing = Listing::New {
+                params: PaginationArg {
+                    cursor_anchor: Seek::Before { cache: VecDeque::new() },
+                    limit: QUERY_RESULT_LIMIT,
+                    seen_count: 0,
+                    show_rules: "null".to_string(),
+                }
+            };
+
             loop {
                 let mut synced_posts = vec![];
                 {
                     let mut guard = api.lock().await;
-                    let task = guard.retrieve_posts(
-                        &subreddit,
-                        &mut listing,
-                    );
-
-                    let post_res = task.await;
-                    if post_res.is_err() {
+                    let res = guard.retrieve_posts(&subreddit, &mut listing).await;
+                    if res.is_err() {
                         continue;
                     }
-                    synced_posts.append(&mut post_res.unwrap())
+                    synced_posts.append(&mut res.unwrap())
                 }
 
-                if synced_posts.len() != 0 {
+                if !synced_posts.is_empty() {
                     synced_posts.reverse();
                     for post in synced_posts {
                         tx.send(post).await.unwrap();
@@ -86,20 +83,33 @@ impl RedditCurator {
                         sync_interval = sync_interval * 2;
                     }
                 }
+
                 sleep_until(Instant::now() + Duration::from_secs(sync_interval)).await;
+                if sync_interval == SYNC_INTERVAL_MAX {
+                    if timeout_cnt > 10 {
+                        listing = Listing::New {
+                            params: PaginationArg {
+                                cursor_anchor: Seek::Before { cache: VecDeque::new() },
+                                limit: QUERY_RESULT_LIMIT,
+                                seen_count: 0,
+                                show_rules: "null".to_string(),
+                            }
+                        };
+                    }
+                    timeout_cnt += 1;
+                }
             }
         };
 
-        let listener_task = spawn(listener);
         if let Some(v) = self.tasks.get_mut(sub.name().as_str()) {
-            v.push(listener_task);
+            v.push(spawn(listener));
         } else {
-            self.tasks.insert(sub.name(), vec![listener_task]);
+            self.tasks.insert(sub.name(), vec![spawn(listener)]);
         }
     }
 
-    pub fn detach_listeners(&mut self, sub: Subreddit) {
-        todo!();
+    pub fn detach_listeners(&mut self, sub: Subreddit) -> Vec<JoinHandle<()>> {
+        self.tasks.remove(sub.name().as_str()).unwrap_or(vec![])
     }
 }
 

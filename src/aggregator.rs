@@ -1,22 +1,24 @@
 use std::collections::VecDeque;
 
 use crate::content::Post;
-use crate::curator::{Curator, RedditCurator};
+use crate::curator::Curator;
 
-struct FilterRule;
+pub trait Filter {
+    fn check_if_meets_condition(&self, post: &Post) -> bool;
+}
 
 #[derive(Copy, Clone)]
 pub struct ClientID(pub u32);
 
-pub struct UserAggregator<'a> {
+pub struct UserAggregator<'c> {
     id: ClientID,
-    curator: &'a mut dyn Curator,
+    curator: &'c mut dyn Curator,
     cache: VecDeque<Post>,
-    filters: Vec<FilterRule>
+    filters: Vec<Box<dyn Filter>>
 }
 
-impl<'a> UserAggregator<'a> {
-    pub fn new(for_client: ClientID, curator: &'a mut dyn Curator) -> UserAggregator<'a> {
+impl<'c> UserAggregator<'c> {
+    pub fn new(for_client: ClientID, curator: &'c mut dyn Curator) -> UserAggregator<'c> {
         UserAggregator {
             id: for_client,
             curator,
@@ -27,10 +29,18 @@ impl<'a> UserAggregator<'a> {
 
     pub async fn listen(&mut self) {
         let receiver = self.curator.receiver();
+        let mut cnt = 1;
         loop {
             if let Some(post) = receiver.recv().await {
-                println!("{:?}", post);
+                for rule in self.filters.iter() {
+                    if !rule.check_if_meets_condition(&post){
+                        continue;
+                    }
+                }
+                println!("{}: {:?}", cnt, post);
                 self.cache.push_back(post);
+                cnt += 1;
+
             } else {
                 break;
             }

@@ -1,3 +1,4 @@
 pub mod reddit;
 pub mod twitter;
-pub mod giphy;
+pub mod imgur;
+mod deviant_art;
