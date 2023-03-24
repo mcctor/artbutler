@@ -1,4 +1,4 @@
+mod deviant_art;
+pub mod imgur;
 pub mod reddit;
 pub mod twitter;
-pub mod imgur;
-mod deviant_art;

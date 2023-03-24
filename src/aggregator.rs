@@ -4,7 +4,7 @@ use crate::content::Post;
 use crate::curator::Curator;
 
 pub trait Filter {
-    fn check_if_meets_condition(&self, post: &Post) -> bool;
+    fn check(&self, post: &Post) -> bool;
 }
 
 #[derive(Copy, Clone)]
@@ -14,7 +14,7 @@ pub struct UserAggregator<'c> {
     id: ClientID,
     curator: &'c mut dyn Curator,
     cache: VecDeque<Post>,
-    filters: Vec<Box<dyn Filter>>
+    filters: Vec<Box<dyn Filter>>,
 }
 
 impl<'c> UserAggregator<'c> {
@@ -23,7 +23,7 @@ impl<'c> UserAggregator<'c> {
             id: for_client,
             curator,
             cache: VecDeque::with_capacity(100),
-            filters: vec![]
+            filters: vec![],
         }
     }
 
@@ -33,14 +33,13 @@ impl<'c> UserAggregator<'c> {
         loop {
             if let Some(post) = receiver.recv().await {
                 for rule in self.filters.iter() {
-                    if !rule.check_if_meets_condition(&post){
+                    if !rule.check(&post) {
                         continue;
                     }
                 }
                 println!("{}: {:?}", cnt, post);
                 self.cache.push_back(post);
                 cnt += 1;
-
             } else {
                 break;
             }

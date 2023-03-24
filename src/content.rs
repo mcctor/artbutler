@@ -1,7 +1,6 @@
 use std::fmt;
 
-
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Eq, Hash)]
 pub struct VoteCount(i32, i32);
 
 impl VoteCount {
@@ -18,7 +17,7 @@ impl VoteCount {
     }
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Eq, Hash)]
 pub struct Post {
     id: String,
     pub link: String,

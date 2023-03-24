@@ -1,26 +1,28 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::{spawn, sync::mpsc::{channel, Receiver}};
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, sleep_until};
+use tokio::time::{sleep_until, Instant};
+use tokio::{
+    spawn,
+    sync::mpsc::{channel, Receiver},
+};
 
 use crate::{
     content::Post,
-    listings::reddit::{Listing, PaginationArg, Reddit, Subreddit, Seek},
+    listings::reddit::{Listing, Reddit, Seek, Subreddit},
 };
 
 pub type Listeners = HashMap<String, Vec<JoinHandle<()>>>;
 
-pub const SYNC_INTERVAL_MAX: u64 = 254;
+pub const SYNC_INTERVAL_MAX: u64 = 128;
 
 pub const SYNC_INTERVAL_DEFAULT: u64 = 1;
 
 pub const QUERY_RESULT_LIMIT: u8 = 5;
-
 
 pub trait Curator {
     fn receiver(&mut self) -> &mut Receiver<Post>;
@@ -28,43 +30,33 @@ pub trait Curator {
 
 pub struct RedditCurator {
     api: Arc<Mutex<Reddit>>,
-    tasks: Listeners,
+    task_groups: Listeners,
     chan: (Sender<Post>, Receiver<Post>),
 }
 
 impl RedditCurator {
-    pub fn from(api: Reddit) -> Self {
+    pub fn new() -> Self {
         let (tx, rcv) = channel(10);
-        let api = Arc::new(Mutex::new(api));
         RedditCurator {
-            api,
-            tasks: HashMap::new(),
+            api: Arc::new(Mutex::new(Reddit::new())),
+            task_groups: HashMap::new(),
             chan: (tx, rcv),
         }
     }
 
-    pub fn attach_listener(&mut self, sub: Subreddit) {
+    pub fn attach_listener(&mut self, mut listing: Listing) {
         let tx = self.chan.0.clone();
-        let subreddit = sub.clone();
+        let subreddit = listing.subreddit();
         let api = self.api.clone();
         let mut sync_interval = SYNC_INTERVAL_DEFAULT as u64;
 
         let listener = async move {
             let mut timeout_cnt = 0;
-            let mut listing = Listing::New {
-                params: PaginationArg {
-                    cursor_anchor: Seek::Before { cache: VecDeque::new() },
-                    limit: QUERY_RESULT_LIMIT,
-                    seen_count: 0,
-                    show_rules: "null".to_string(),
-                }
-            };
-
             loop {
                 let mut synced_posts = vec![];
                 {
                     let mut guard = api.lock().await;
-                    let res = guard.retrieve_posts(&subreddit, &mut listing).await;
+                    let res = guard.retrieve_posts(&mut listing).await;
                     if res.is_err() {
                         continue;
                     }
@@ -86,30 +78,28 @@ impl RedditCurator {
 
                 sleep_until(Instant::now() + Duration::from_secs(sync_interval)).await;
                 if sync_interval == SYNC_INTERVAL_MAX {
-                    if timeout_cnt > 10 {
-                        listing = Listing::New {
-                            params: PaginationArg {
-                                cursor_anchor: Seek::Before { cache: VecDeque::new() },
-                                limit: QUERY_RESULT_LIMIT,
-                                seen_count: 0,
-                                show_rules: "null".to_string(),
-                            }
-                        };
+                    if timeout_cnt > 3 {
+                        // reset listing anchor
+                        listing.set_anchor_post(Post::empty());
+                        timeout_cnt = 0;
                     }
                     timeout_cnt += 1;
                 }
             }
         };
 
-        if let Some(v) = self.tasks.get_mut(sub.name().as_str()) {
-            v.push(spawn(listener));
+        let listener = spawn(listener);
+        if let Some(group) = self.task_groups.get_mut(subreddit.name().as_str()) {
+            group.push(listener);
         } else {
-            self.tasks.insert(sub.name(), vec![spawn(listener)]);
+            self.task_groups.insert(subreddit.name(), vec![listener]);
         }
     }
 
-    pub fn detach_listeners(&mut self, sub: Subreddit) -> Vec<JoinHandle<()>> {
-        self.tasks.remove(sub.name().as_str()).unwrap_or(vec![])
+    pub fn detach_listeners(&mut self, listing: &Listing) -> Vec<JoinHandle<()>> {
+        self.task_groups
+            .remove(listing.subreddit().name().as_str())
+            .unwrap_or(vec![])
     }
 }
 
