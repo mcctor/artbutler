@@ -1,14 +1,18 @@
 use std::collections::{HashMap, VecDeque};
+use std::env;
 use std::time::Duration;
-use std::{env, vec};
+
+use async_trait::async_trait;
+use dotenvy::dotenv;
+use log::info;
 
 use reqwest::{Client, Response, Result};
 use serde_json::Value;
 use tokio::time::Instant;
 
 use crate::content::{Post, VoteCount};
-use crate::curator::QUERY_RESULT_LIMIT;
 use crate::listings::reddit::Listing::{Hot, New, Random, Rising, Sort};
+use crate::listings::source::ListingSource;
 
 const REDDIT_USER_AGENT: &str = "windows:com.example.artbutler:v0.0.1 (by /u/mcctor)";
 
@@ -23,35 +27,120 @@ pub struct BearerToken {
     expires: Instant,
 }
 
-#[derive(Debug)]
-pub struct Reddit {
+#[derive(Debug, Clone)]
+pub struct Api {
     cli: Client,
     has_token: Option<BearerToken>,
 }
 
-impl Reddit {
-    pub fn new() -> Self {
-        Reddit {
-            cli: Client::new(),
-            has_token: None,
-        }
+#[tokio::test]
+async fn test_request() {
+    let cli = Client::new();
+    let mut api = Api::from(&cli);
+
+    let mut pagination = Pagination::builder();
+    pagination.set_cursor(Post::empty());
+    pagination.set_limit(2);
+    pagination.seek_back();
+
+    let mut new_listing = New {
+        subreddit: Subreddit("earthporn".to_string()),
+        paginator: pagination,
+    };
+    let res = api.request(&new_listing).await.unwrap();
+
+    let value = res.json::<Value>().await.unwrap();
+    let parsed_children = value["data"]["children"].as_array().unwrap();
+    assert_eq!(new_listing.result_limit() as usize, parsed_children.len());
+    println!("{:#?}", parsed_children);
+}
+
+#[tokio::test]
+async fn test_multi_request_seek_back() {
+    let cli = Client::new();
+    let mut api = Api::from(&cli);
+
+    let mut pagination = Pagination::builder();
+    pagination.set_cursor(Post::empty());
+    pagination.set_limit(2);
+    pagination.seek_forward();
+
+    let mut new_listing = New {
+        subreddit: Subreddit("artbutler".to_string()),
+        paginator: pagination,
+    };
+    let first_res = api.request(&new_listing).await.unwrap();
+    let batch_a = api
+        .serialize(first_res, new_listing.result_limit())
+        .await
+        .unwrap();
+    if !batch_a.is_empty() {
+        new_listing.update_paginator_cache(&batch_a);
     }
 
-    pub fn from(cli: &Client) -> Self {
-        Reddit {
-            cli: cli.clone(),
-            has_token: None,
-        }
+    let second_res = api.request(&new_listing).await.unwrap();
+    let batch_b = api
+        .serialize(second_res, new_listing.result_limit())
+        .await
+        .unwrap();
+    if !batch_b.is_empty() {
+        new_listing.update_paginator_cache(&batch_b);
     }
 
-    pub async fn retrieve_posts(&mut self, listing: &mut Listing) -> Result<Vec<Post>> {
+    println!("{:#?}", batch_a);
+    println!("{:#?}", batch_b);
+}
+
+#[tokio::test]
+async fn test_serialize() {
+    let cli = Client::new();
+    let mut api = Api::from(&cli);
+
+    let mut pagination = Pagination::builder();
+    pagination.set_cursor(Post::empty());
+    pagination.set_limit(4);
+
+    let mut new_listing = New {
+        subreddit: Subreddit("artbutler".to_string()),
+        paginator: pagination,
+    };
+
+    let res = api.request(&new_listing).await.unwrap();
+    let parsed = api
+        .serialize(res, new_listing.result_limit())
+        .await
+        .unwrap();
+    assert_eq!(parsed.len(), new_listing.result_limit() as usize);
+
+    let mut cnt = new_listing.result_limit();
+    for post in &parsed {
+        let post_title = format!("Post {}", cnt);
+        assert_eq!(post.title(), post_title);
+        cnt -= 1;
+    }
+    println!("{:#?}", parsed);
+}
+
+#[async_trait]
+impl ListingSource for Api {
+    async fn retrieve_posts(&mut self, listing: &mut Listing) -> Result<VecDeque<Post>> {
         let resp = self.request(listing).await?;
-        let posts = self.serialize(resp, listing.result_limit()).await;
+        let posts = self.serialize(resp, listing.result_limit()).await.unwrap();
         if !posts.is_empty() {
-            listing.update_paginator(&posts);
+            listing.update_paginator_cache(&posts);
         }
 
         Ok(posts)
+    }
+}
+
+impl Api {
+    pub fn from(cli: &Client) -> Self {
+        dotenv().ok().unwrap();
+        Api {
+            cli: cli.clone(),
+            has_token: None,
+        }
     }
 
     async fn authenticate(&mut self, auth_option: AuthTokenAction) -> Result<&BearerToken> {
@@ -60,7 +149,7 @@ impl Reddit {
         let username = env::var("USER_NAME").expect("USERNAME not provided");
         let pass = env::var("PASSWORD").expect("PASSWORD not provided");
 
-        let args = Reddit::auth_url_args(username, pass, self.has_token.as_ref(), auth_option);
+        let args = Api::auth_url_args(username, pass, self.has_token.as_ref(), auth_option);
         let url = format!("https://www.reddit.com/api/v1/access_token{}", args);
         let res = self
             .cli
@@ -75,6 +164,8 @@ impl Reddit {
             token: value["access_token"].as_str().unwrap().to_string(),
             expires: Instant::now() + Duration::from_secs(value["expires_in"].as_u64().unwrap()),
         });
+
+        info!("Reddit API is authenticated");
         self.has_token = token;
         Ok(self.has_token.as_ref().unwrap())
     }
@@ -105,9 +196,10 @@ impl Reddit {
         args
     }
 
-    async fn authenticate_or_refresh(&mut self) -> Result<&BearerToken> {
+    pub async fn authenticate_or_refresh(&mut self) -> Result<&BearerToken> {
         if let Some(t) = self.has_token.as_ref() {
             if Instant::now() > (t.expires - Duration::from_secs(60)) {
+                info!("Reddit API bearer token refreshed");
                 self.authenticate(AuthTokenAction::Refresh).await?;
             }
             Ok(self.has_token.as_ref().unwrap())
@@ -128,22 +220,18 @@ impl Reddit {
         Ok(res)
     }
 
-    async fn serialize(&self, resp: Response, result_count: u8) -> Vec<Post> {
-        let raw_json = match resp.json::<Value>().await {
-            Ok(v) => v,
-            Err(_) => return vec![],
-        };
-
-        let mut posts = Vec::new();
+    async fn serialize(&self, resp: Response, result_count: u64) -> Result<VecDeque<Post>> {
+        let raw_json = resp.json::<Value>().await?;
+        let mut posts = VecDeque::new();
         for i in 0..result_count {
             let post_raw = &raw_json["data"]["children"][i as usize]["data"];
             let post = self.parse_post(&post_raw);
             if *post.id() != "ul".to_string() {
-                posts.push(post);
+                posts.push_front(post);
             }
         }
 
-        posts
+        Ok(posts)
     }
 
     fn parse_post(&self, raw_json: &Value) -> Post {
@@ -153,7 +241,7 @@ impl Reddit {
             fields.insert("url".to_string(), raw_json["url"].to_string());
             fields.insert("author".to_string(), raw_json["author"].to_string());
             fields.insert("title".to_string(), raw_json["title"].to_string());
-            Reddit::normalize(&mut fields);
+            Api::normalize(&mut fields);
         }
 
         let ups = match raw_json["ups"].to_string().parse() {
@@ -196,12 +284,14 @@ impl Reddit {
 pub struct Subreddit(String);
 
 impl Subreddit {
-    pub fn from(name: &str) -> Self {
-        Subreddit(name.to_string())
-    }
-
     pub fn name(&self) -> String {
         self.0.to_string()
+    }
+}
+
+impl<T: ToString> From<T> for Subreddit {
+    fn from(s: T) -> Self {
+        Self(s.to_string())
     }
 }
 
@@ -218,26 +308,59 @@ pub enum Time {
 #[derive(PartialEq, Debug, Clone, Eq, Hash)]
 pub enum Seek {
     After { cache: VecDeque<Post> },
-    Before { cache: VecDeque<Post> },
+    Back { cache: VecDeque<Post> },
 }
 
 #[derive(PartialEq, Debug, Clone, Eq, Hash)]
-pub struct PaginationArg {
-    pub cursor_anchor: Seek,
-    pub limit: u8,
-    pub seen_count: u8,
-    pub show_rules: String,
+pub struct Pagination {
+    cursor_anchor: Seek,
+    limit: u64,
+    seen_count: u64,
+    show_rules: String,
 }
 
-impl PaginationArg {
-    pub fn seek_front() -> Self {
-        let mut cache = VecDeque::new();
-        cache.push_back(Post::empty());
-        PaginationArg {
-            cursor_anchor: Seek::Before { cache },
-            limit: 5,
+impl Pagination {
+    pub fn builder() -> Self {
+        Pagination {
+            cursor_anchor: Seek::After {
+                cache: Default::default(),
+            },
+            limit: 0,
             seen_count: 0,
-            show_rules: "null".to_string(),
+            show_rules: "".to_string(),
+        }
+    }
+
+    pub fn cursor(&self) -> &Seek {
+        &self.cursor_anchor
+    }
+
+    pub fn set_cursor(&mut self, p: Post) -> &mut Self {
+        match &mut self.cursor_anchor {
+            Seek::After { cache } => {
+                cache.push_back(p);
+            }
+            Seek::Back { cache } => {
+                cache.push_back(p);
+            }
+        };
+        self
+    }
+
+    pub fn set_limit(&mut self, value: u64) -> &mut Self {
+        self.limit = value;
+        self
+    }
+
+    pub fn seek_forward(&mut self) {
+        self.cursor_anchor = Seek::After {
+            cache: Default::default(),
+        }
+    }
+
+    pub fn seek_back(&mut self) {
+        self.cursor_anchor = Seek::Back {
+            cache: Default::default(),
         }
     }
 }
@@ -246,19 +369,19 @@ impl PaginationArg {
 pub enum Listing {
     Hot {
         subreddit: Subreddit,
-        params: PaginationArg,
+        paginator: Pagination,
     },
     New {
         subreddit: Subreddit,
-        params: PaginationArg,
+        paginator: Pagination,
     },
     Rising {
         subreddit: Subreddit,
-        params: PaginationArg,
+        paginator: Pagination,
     },
     Sort {
         subreddit: Subreddit,
-        params: PaginationArg,
+        paginator: Pagination,
         time: Time,
     },
     Random {
@@ -268,22 +391,26 @@ pub enum Listing {
 
 impl Listing {
     pub fn from(listing_name: &str, sub: Subreddit) -> Listing {
+        let mut pagination = Pagination::builder();
+        pagination.set_cursor(Post::empty());
+        pagination.set_limit(5);
+
         match listing_name {
             "hot" => Hot {
                 subreddit: sub,
-                params: PaginationArg::seek_front(),
+                paginator: pagination.clone(),
             },
             "new" => New {
                 subreddit: sub,
-                params: PaginationArg::seek_front(),
+                paginator: pagination.clone(),
             },
             "rising" => Rising {
                 subreddit: sub,
-                params: PaginationArg::seek_front(),
+                paginator: pagination.clone(),
             },
             "sort" => Sort {
                 subreddit: sub,
-                params: PaginationArg::seek_front(),
+                paginator: pagination.clone(),
                 time: Time::Hour,
             },
             "random" => Random { subreddit: sub },
@@ -295,36 +422,44 @@ impl Listing {
         href_buf.push_str("https://oauth.reddit.com");
 
         match self {
-            Hot { subreddit, params } => {
+            Random { subreddit } => {
                 href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
                 href_buf.push_str(self.listing_tag());
-                href_buf.push_str(self.url_args(params).as_str());
-            }
-            New { subreddit, params } => {
-                href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
-                href_buf.push_str(self.listing_tag());
-                href_buf.push_str(self.url_args(params).as_str());
-            }
-            Rising { subreddit, params } => {
-                href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
-                href_buf.push_str(self.listing_tag());
-                href_buf.push_str(self.url_args(params).as_str());
             }
             Sort {
                 subreddit,
                 time,
-                params,
+                paginator: params,
             } => {
                 href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
                 href_buf.push_str(self.listing_tag());
                 href_buf.push_str(self.url_args(params).as_str());
             }
-            Random { subreddit } => {
+            Hot {
+                subreddit,
+                paginator: params,
+            } => {
                 href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
                 href_buf.push_str(self.listing_tag());
+                href_buf.push_str(self.url_args(params).as_str());
+            }
+            New {
+                subreddit,
+                paginator: params,
+            } => {
+                href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
+                href_buf.push_str(self.listing_tag());
+                href_buf.push_str(self.url_args(params).as_str());
+            }
+            Rising {
+                subreddit,
+                paginator: params,
+            } => {
+                href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
+                href_buf.push_str(self.listing_tag());
+                href_buf.push_str(self.url_args(params).as_str());
             }
         };
-
         href_buf
     }
 
@@ -338,50 +473,58 @@ impl Listing {
         }
     }
 
-    pub fn update_paginator(&mut self, with: &Vec<Post>) {
+    pub fn update_paginator_cache(&mut self, with: &VecDeque<Post>) {
         match self {
             Random { .. } => (),
             listing => match &mut listing.paginator().cursor_anchor {
                 Seek::After { cache: posts } => {
                     posts.clear();
                     for post in with {
-                        posts.push_front(post.clone());
+                        posts.push_back(post.clone());
                     }
                 }
-                Seek::Before { cache: posts } => {
+                Seek::Back { cache: posts } => {
                     posts.clear();
                     for post in with {
-                        posts.push_back(post.clone());
+                        posts.push_front(post.clone());
                     }
                 }
             },
         };
     }
 
-    pub fn result_limit(&mut self) -> u8 {
+    pub fn result_limit(&mut self) -> u64 {
         match self {
             Random { .. } => 1,
             listing => listing.paginator().limit,
         }
     }
 
-    pub fn set_anchor_post(&mut self, p: Post) {
+    pub fn reset_cursor(&mut self) {
         match &mut self.paginator().cursor_anchor {
             Seek::After { cache: posts } => {
-                posts.push_front(p);
+                posts.push_front(Post::empty());
             }
-            Seek::Before { cache: posts } => {
-                posts.push_back(p);
+            Seek::Back { cache: posts } => {
+                posts.push_back(Post::empty());
             }
         };
     }
 
-    pub fn paginator(&mut self) -> &mut PaginationArg {
+    pub fn paginator(&mut self) -> &mut Pagination {
         match self {
-            Hot { params, .. } => params,
-            New { params, .. } => params,
-            Rising { params, .. } => params,
-            Sort { params, .. } => params,
+            Hot {
+                paginator: params, ..
+            } => params,
+            New {
+                paginator: params, ..
+            } => params,
+            Rising {
+                paginator: params, ..
+            } => params,
+            Sort {
+                paginator: params, ..
+            } => params,
             Random { .. } => {
                 panic!("pagination does not exist for `SubredditListing::Random`")
             }
@@ -398,26 +541,36 @@ impl Listing {
         }
     }
 
-    fn url_args(&self, pagination_arg: &PaginationArg) -> String {
+    fn url_args(&self, pagination_arg: &Pagination) -> String {
         let mut buf = String::new();
         match &pagination_arg.cursor_anchor {
-            Seek::After { cache: posts } => {
+            Seek::Back { cache: posts } => {
                 let mut args = String::new();
                 if posts.len() == 0 {
                     args.push_str(format!("?after={}", "null").as_str());
                 } else {
                     let post = posts.get(posts.len() - 1).unwrap();
-                    args.push_str(format!("?after={}", format!("t3_{}", post.id())).as_str());
+                    let cursor_arg = if post.id().is_empty() {
+                        "null".to_string()
+                    } else {
+                        format!("t3_{}", post.id().to_string())
+                    };
+                    args.push_str(format!("?after={}", cursor_arg).as_str());
                 }
                 buf.push_str(args.as_str())
             }
-            Seek::Before { cache: posts } => {
+            Seek::After { cache: posts } => {
                 let mut args = String::new();
                 if posts.len() == 0 {
                     args.push_str(format!("?before={}", "null").as_str());
                 } else {
-                    let post = posts.get(0).unwrap();
-                    args.push_str(format!("?before={}", format!("t3_{}", post.id())).as_str());
+                    let post = posts.get(posts.len() - 1).unwrap();
+                    let cursor_arg = if post.id().is_empty() {
+                        "null".to_string()
+                    } else {
+                        format!("t3_{}", post.id().to_string())
+                    };
+                    args.push_str(format!("?before={}", cursor_arg).as_str());
                 }
                 buf.push_str(args.as_str())
             }
@@ -430,22 +583,6 @@ impl Listing {
             .as_str(),
         );
         buf
-    }
-}
-
-impl Default for Listing {
-    fn default() -> Self {
-        New {
-            subreddit: Subreddit::from("art"),
-            params: PaginationArg {
-                cursor_anchor: Seek::After {
-                    cache: VecDeque::new(),
-                },
-                limit: QUERY_RESULT_LIMIT,
-                seen_count: 0,
-                show_rules: "null".to_string(),
-            },
-        }
     }
 }
 

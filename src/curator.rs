@@ -1,7 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashSet, VecDeque};
+use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::StreamExt;
+use log::{error, info, warn};
+use reqwest::Client;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -11,100 +15,231 @@ use tokio::{
     sync::mpsc::{channel, Receiver},
 };
 
-use crate::{
-    content::Post,
-    listings::reddit::{Listing, Reddit, Seek, Subreddit},
-};
+use crate::listings::reddit;
+use crate::listings::reddit::Listing::New;
+use crate::listings::reddit::{Pagination, Seek, Subreddit};
+use crate::listings::source::ListingSource;
+use crate::{content::Post, listings::reddit::Listing};
 
-pub type Listeners = HashMap<String, Vec<JoinHandle<()>>>;
-
-pub const SYNC_INTERVAL_MAX: u64 = 128;
+pub const SYNC_INTERVAL_MAX: u64 = 32;
 
 pub const SYNC_INTERVAL_DEFAULT: u64 = 1;
 
-pub const QUERY_RESULT_LIMIT: u8 = 5;
+#[tokio::test]
+async fn test_curator() {
+    let reddit = reddit::Api::from(&Client::new());
+    let mut curator = Curator::from(reddit);
 
-pub trait Curator {
-    fn receiver(&mut self) -> &mut Receiver<Post>;
+    let mut pagination = Pagination::builder();
+    pagination.set_cursor(Post::empty());
+    pagination.set_limit(2);
+    pagination.seek_forward();
+
+    let new_listing = New {
+        subreddit: Subreddit::from("artbutler".to_string()),
+        paginator: pagination,
+    };
+
+    curator.spawn_for(Arc::new(Mutex::new(new_listing)));
+    while let Some(post) = curator.chan.1.recv().await {
+        println!("{:?}", post);
+    }
 }
 
-pub struct RedditCurator {
-    api: Arc<Mutex<Reddit>>,
-    task_groups: Listeners,
-    chan: (Sender<Post>, Receiver<Post>),
+struct Buffer {
+    buf: VecDeque<Post>,
+    size: usize,
 }
 
-impl RedditCurator {
-    pub fn new() -> Self {
-        let (tx, rcv) = channel(10);
-        RedditCurator {
-            api: Arc::new(Mutex::new(Reddit::new())),
-            task_groups: HashMap::new(),
-            chan: (tx, rcv),
+impl Buffer {
+    fn new(len: usize) -> Self {
+        if len == 0 {
+            panic!("buffer must be of size > 0");
+        }
+        Self {
+            buf: VecDeque::with_capacity(len),
+            size: len,
         }
     }
 
-    pub fn attach_listener(&mut self, mut listing: Listing) {
-        let tx = self.chan.0.clone();
-        let subreddit = listing.subreddit();
-        let api = self.api.clone();
-        let mut sync_interval = SYNC_INTERVAL_DEFAULT as u64;
+    fn from(xs: &[Post]) -> Self {
+        let mut buf = Self::new(xs.len());
+        for post in xs.into_iter() {
+            buf.insert(post.clone());
+        }
+        buf
+    }
 
-        let listener = async move {
-            let mut timeout_cnt = 0;
-            loop {
-                let mut synced_posts = vec![];
-                {
-                    let mut guard = api.lock().await;
-                    let res = guard.retrieve_posts(&mut listing).await;
-                    if res.is_err() {
-                        continue;
-                    }
-                    synced_posts.append(&mut res.unwrap())
+    fn is_full(&self) -> bool {
+        !(self.buf.len() < self.size)
+    }
+
+    fn difference(&self, other: &VecDeque<Post>) -> Vec<Post> {
+        let mut buf_set = HashSet::new();
+
+        for post in self.buf.iter() {
+            buf_set.insert(post);
+        }
+
+        let mut diff = Vec::new();
+        for post in other.iter() {
+            if !buf_set.contains(post) {
+                diff.push(post.clone())
+            }
+        }
+
+        diff
+    }
+
+    fn insert(&mut self, p: Post) {
+        if self.is_full() {
+            self.buf.push_back(p);
+            self.buf.pop_front();
+            return;
+        }
+        self.buf.push_back(p);
+    }
+}
+
+pub struct Curator<T> {
+    src: T,
+    curations: Vec<JoinHandle<()>>,
+    pub chan: (Sender<Post>, Receiver<Post>),
+}
+
+impl<T: ListingSource> Curator<T> {
+    pub fn from(src: T) -> Self {
+        Curator {
+            src,
+            curations: vec![],
+            chan: channel(5),
+        }
+    }
+
+    pub fn spawn_for(&mut self, listing: Arc<Mutex<Listing>>) {
+        let api = self.src.clone();
+        let task = spawn(Self::listing_listener(
+            api,
+            self.chan.0.clone(),
+            listing.clone(),
+            SYNC_INTERVAL_DEFAULT as u64,
+        ));
+        self.curations.push(task);
+    }
+
+    async fn listing_listener(
+        mut api: T,
+        tx: Sender<Post>,
+        listing: Arc<Mutex<Listing>>,
+        mut sync_interval: u64,
+    ) {
+        let mut timeout_cnt = 0;
+        let mut sub = Subreddit::from("");
+        let mut buffer = Buffer::new(10);
+
+        loop {
+            let mut synced_posts = VecDeque::new();
+            {
+                let mut listing_guard = listing.lock().await;
+                sub = listing_guard.subreddit().clone();
+
+                let res = api.retrieve_posts(&mut listing_guard).await;
+                if res.is_err() {
+                    error!("couldn't retrieve posts: {}", res.err().unwrap());
+                    warn!("Retrying post retrieval in 10s");
+
+                    sleep_until(Instant::now() + Duration::from_secs(10)).await;
+                    continue;
                 }
 
-                if !synced_posts.is_empty() {
-                    synced_posts.reverse();
-                    for post in synced_posts {
-                        tx.send(post).await.unwrap();
+                let posts = res.unwrap();
+                match listing_guard.paginator().cursor() {
+                    Seek::After { .. } => {
+                        for post in &posts {
+                            synced_posts.push_back(post.clone());
+                        }
                     }
+                    Seek::Back { .. } => {
+                        for post in &posts {
+                            synced_posts.push_front(post.clone());
+                        }
+                    }
+                }
+            }
+
+            let new_posts = buffer.difference(&synced_posts);
+            if new_posts.is_empty() {
+                if sync_interval < SYNC_INTERVAL_MAX {
+                    sync_interval *= 2;
+                }
+                info!(
+                    "No new post since last poll for `r/{}`, \
+                         increased wait interval to {}s",
+                    sub.name(),
+                    sync_interval
+                );
+            } else {
+                info!(
+                    "{} new post(s) found for `r/{}`! Resetting wait interval",
+                    new_posts.len(),
+                    sub.name(),
+                );
+
+                for post in new_posts {
+                    buffer.insert(post.clone());
+                    tx.send(post).await.unwrap()
+                }
+
+                sync_interval = SYNC_INTERVAL_DEFAULT;
+                continue;
+            }
+
+            sleep_until(Instant::now() + Duration::from_secs(sync_interval)).await;
+            if sync_interval >= SYNC_INTERVAL_MAX {
+                if timeout_cnt == 2 {
+                    let mut synced_posts = VecDeque::new();
+                    {
+                        info!("Polling timeout for `r/{}`, retrying ...", sub.name());
+                        let mut listing_guard = listing.lock().await;
+
+                        match listing_guard.paginator().cursor() {
+                            Seek::After { .. } => {
+                                let mut deck = VecDeque::new();
+                                deck.push_back(Post::empty());
+                                listing_guard.update_paginator_cache(&deck);
+
+                                let res = api.retrieve_posts(&mut listing_guard).await.unwrap();
+                                for post in res {
+                                    synced_posts.push_back(post.clone());
+                                }
+                            }
+                            Seek::Back { cache } => {
+                                // let mut deck = cache;
+                                // deck.push_back(Post::empty());
+                                // listing_guard.update_paginator_cache(&deck);
+                                //
+                                // let res = api.retrieve_posts(&mut listing_guard).await.unwrap();
+                                // for post in res {
+                                //     synced_posts.push_front(post.clone());
+                                // }
+                                info!("Finished polling back, no more posts. Exiting ...");
+                                break;
+                            }
+                        }
+                    }
+
+                    let new_posts = buffer.difference(&synced_posts);
+                    for post in &new_posts {
+                        buffer.insert(post.clone());
+                        tx.send(post.clone()).await.unwrap()
+                    }
+
                     sync_interval = SYNC_INTERVAL_DEFAULT;
-
+                    timeout_cnt = 0;
                 } else {
-                    if sync_interval < SYNC_INTERVAL_MAX {
-                        sync_interval = sync_interval * 2;
-                    }
-                }
-
-                sleep_until(Instant::now() + Duration::from_secs(sync_interval)).await;
-                if sync_interval == SYNC_INTERVAL_MAX {
-                    if timeout_cnt > 3 {
-                        // reset listing anchor
-                        listing.set_anchor_post(Post::empty());
-                        timeout_cnt = 0;
-                    }
                     timeout_cnt += 1;
                 }
             }
-        };
-
-        let listener = spawn(listener);
-        if let Some(group) = self.task_groups.get_mut(subreddit.name().as_str()) {
-            group.push(listener);
-        } else {
-            self.task_groups.insert(subreddit.name(), vec![listener]);
         }
-    }
-
-    pub fn detach_listeners(&mut self, listing: &Listing) -> Vec<JoinHandle<()>> {
-        self.task_groups
-            .remove(listing.subreddit().name().as_str())
-            .unwrap_or(vec![])
-    }
-}
-
-impl Curator for RedditCurator {
-    fn receiver(&mut self) -> &mut Receiver<Post> {
-        &mut self.chan.1
     }
 }

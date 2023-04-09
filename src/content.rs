@@ -1,4 +1,5 @@
-use std::fmt;
+use std::fmt::Formatter;
+use std::hash::Hasher;
 
 #[derive(PartialEq, Debug, Clone, Eq, Hash)]
 pub struct VoteCount(i32, i32);
@@ -17,7 +18,7 @@ impl VoteCount {
     }
 }
 
-#[derive(PartialEq, Debug, Clone, Eq, Hash)]
+#[derive(Debug, Clone, Eq)]
 pub struct Post {
     id: String,
     pub link: String,
@@ -60,11 +61,30 @@ impl Post {
     pub fn id(&self) -> &String {
         &self.id
     }
+
+    pub fn title(&self) -> String {
+        self.title.to_string()
+    }
 }
 
-impl fmt::Display for Post {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        // implement formatter.
-        Ok(())
+impl PartialEq for Post {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl std::hash::Hash for Post {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: std::hash::Hasher,
+    {
+        state.write(self.id.as_bytes());
+        state.finish();
+    }
+}
+
+impl std::fmt::Display for Post {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(format!("Post {}", self.id).as_str())
     }
 }
