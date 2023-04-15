@@ -42,11 +42,13 @@ pub async fn listen_silence_handler(
 
                 while let Some(post) = curator.chan.1.recv().await {
                     let url = Url::parse(post.link.as_str()).unwrap();
-                    bot.send_photo(msg.chat.id, InputFile::url(url))
+                    let file = InputFile::url(url);
+                    if let Ok(v) = bot
+                        .send_photo(msg.chat.id, file)
                         .caption(format!("<i>{}</i>", post.title()))
                         .parse_mode(ParseMode::Html)
                         .await
-                        .unwrap();
+                    {}
                     info!(
                         "Forwarded PostID: '{}' to UserID: '{}'",
                         post.id(),

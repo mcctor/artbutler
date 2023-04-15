@@ -1,11 +1,8 @@
 use std::collections::{HashSet, VecDeque};
-use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::StreamExt;
 use log::{error, info, warn};
-use reqwest::Client;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -15,36 +12,14 @@ use tokio::{
     sync::mpsc::{channel, Receiver},
 };
 
-use crate::listings::reddit;
-use crate::listings::reddit::Listing::New;
-use crate::listings::reddit::{Pagination, Seek, Subreddit};
-use crate::listings::source::ListingSource;
+use crate::listings::reddit::{Seek, Subreddit};
 use crate::{content::Post, listings::reddit::Listing};
+
+use crate::listings::source::ListingSource;
 
 pub const SYNC_INTERVAL_MAX: u64 = 32;
 
 pub const SYNC_INTERVAL_DEFAULT: u64 = 1;
-
-#[tokio::test]
-async fn test_curator() {
-    let reddit = reddit::Api::from(&Client::new());
-    let mut curator = Curator::from(reddit);
-
-    let mut pagination = Pagination::builder();
-    pagination.set_cursor(Post::empty());
-    pagination.set_limit(2);
-    pagination.seek_forward();
-
-    let new_listing = New {
-        subreddit: Subreddit::from("artbutler".to_string()),
-        paginator: pagination,
-    };
-
-    curator.spawn_for(Arc::new(Mutex::new(new_listing)));
-    while let Some(post) = curator.chan.1.recv().await {
-        println!("{:?}", post);
-    }
-}
 
 struct Buffer {
     buf: VecDeque<Post>,
@@ -62,19 +37,11 @@ impl Buffer {
         }
     }
 
-    fn from(xs: &[Post]) -> Self {
-        let mut buf = Self::new(xs.len());
-        for post in xs.into_iter() {
-            buf.insert(post.clone());
-        }
-        buf
-    }
-
     fn is_full(&self) -> bool {
         !(self.buf.len() < self.size)
     }
 
-    fn difference(&self, other: &VecDeque<Post>) -> Vec<Post> {
+    fn difference(&self, other: VecDeque<Post>) -> Vec<Post> {
         let mut buf_set = HashSet::new();
 
         for post in self.buf.iter() {
@@ -82,9 +49,9 @@ impl Buffer {
         }
 
         let mut diff = Vec::new();
-        for post in other.iter() {
-            if !buf_set.contains(post) {
-                diff.push(post.clone())
+        for post in other {
+            if !buf_set.contains(&post) {
+                diff.push(post)
             }
         }
 
@@ -118,10 +85,13 @@ impl<T: ListingSource> Curator<T> {
 
     pub fn spawn_for(&mut self, listing: Arc<Mutex<Listing>>) {
         let api = self.src.clone();
+        let tx = self.chan.0.clone();
+        let listing = listing.clone();
+
         let task = spawn(Self::listing_listener(
             api,
-            self.chan.0.clone(),
-            listing.clone(),
+            tx,
+            listing,
             SYNC_INTERVAL_DEFAULT as u64,
         ));
         self.curations.push(task);
@@ -134,11 +104,11 @@ impl<T: ListingSource> Curator<T> {
         mut sync_interval: u64,
     ) {
         let mut timeout_cnt = 0;
-        let mut sub = Subreddit::from("");
         let mut buffer = Buffer::new(10);
 
         loop {
             let mut synced_posts = VecDeque::new();
+            let mut sub = Subreddit::from("");
             {
                 let mut listing_guard = listing.lock().await;
                 sub = listing_guard.subreddit().clone();
@@ -155,20 +125,37 @@ impl<T: ListingSource> Curator<T> {
                 let posts = res.unwrap();
                 match listing_guard.paginator().cursor() {
                     Seek::After { .. } => {
-                        for post in &posts {
-                            synced_posts.push_back(post.clone());
+                        for post in posts {
+                            synced_posts.push_back(post);
                         }
                     }
                     Seek::Back { .. } => {
-                        for post in &posts {
-                            synced_posts.push_front(post.clone());
+                        for post in posts {
+                            synced_posts.push_front(post);
                         }
                     }
                 }
             }
 
-            let new_posts = buffer.difference(&synced_posts);
-            if new_posts.is_empty() {
+            let new_posts = buffer.difference(synced_posts);
+            if !new_posts.is_empty() {
+                info!(
+                    "{} new post(s) found for `r/{}`! Resetting wait interval",
+                    new_posts.len(),
+                    sub.name(),
+                );
+
+                for post in new_posts {
+                    buffer.insert(post.clone());
+                    let sent = tx.send(post).await;
+                    if sent.is_err() {
+                        continue;
+                    }
+                }
+
+                sync_interval = SYNC_INTERVAL_DEFAULT;
+                continue;
+            } else {
                 if sync_interval < SYNC_INTERVAL_MAX {
                     sync_interval *= 2;
                 }
@@ -178,20 +165,6 @@ impl<T: ListingSource> Curator<T> {
                     sub.name(),
                     sync_interval
                 );
-            } else {
-                info!(
-                    "{} new post(s) found for `r/{}`! Resetting wait interval",
-                    new_posts.len(),
-                    sub.name(),
-                );
-
-                for post in new_posts {
-                    buffer.insert(post.clone());
-                    tx.send(post).await.unwrap()
-                }
-
-                sync_interval = SYNC_INTERVAL_DEFAULT;
-                continue;
             }
 
             sleep_until(Instant::now() + Duration::from_secs(sync_interval)).await;
@@ -210,28 +183,23 @@ impl<T: ListingSource> Curator<T> {
 
                                 let res = api.retrieve_posts(&mut listing_guard).await.unwrap();
                                 for post in res {
-                                    synced_posts.push_back(post.clone());
+                                    synced_posts.push_back(post);
                                 }
                             }
-                            Seek::Back { cache } => {
-                                // let mut deck = cache;
-                                // deck.push_back(Post::empty());
-                                // listing_guard.update_paginator_cache(&deck);
-                                //
-                                // let res = api.retrieve_posts(&mut listing_guard).await.unwrap();
-                                // for post in res {
-                                //     synced_posts.push_front(post.clone());
-                                // }
+                            Seek::Back { .. } => {
                                 info!("Finished polling back, no more posts. Exiting ...");
                                 break;
                             }
                         }
                     }
 
-                    let new_posts = buffer.difference(&synced_posts);
-                    for post in &new_posts {
+                    let new_posts = buffer.difference(synced_posts);
+                    for post in new_posts {
                         buffer.insert(post.clone());
-                        tx.send(post.clone()).await.unwrap()
+                        let sent = tx.send(post).await;
+                        if sent.is_err() {
+                            continue;
+                        }
                     }
 
                     sync_interval = SYNC_INTERVAL_DEFAULT;

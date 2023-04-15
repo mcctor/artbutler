@@ -33,94 +33,6 @@ pub struct Api {
     has_token: Option<BearerToken>,
 }
 
-#[tokio::test]
-async fn test_request() {
-    let cli = Client::new();
-    let mut api = Api::from(&cli);
-
-    let mut pagination = Pagination::builder();
-    pagination.set_cursor(Post::empty());
-    pagination.set_limit(2);
-    pagination.seek_back();
-
-    let mut new_listing = New {
-        subreddit: Subreddit("earthporn".to_string()),
-        paginator: pagination,
-    };
-    let res = api.request(&new_listing).await.unwrap();
-
-    let value = res.json::<Value>().await.unwrap();
-    let parsed_children = value["data"]["children"].as_array().unwrap();
-    assert_eq!(new_listing.result_limit() as usize, parsed_children.len());
-    println!("{:#?}", parsed_children);
-}
-
-#[tokio::test]
-async fn test_multi_request_seek_back() {
-    let cli = Client::new();
-    let mut api = Api::from(&cli);
-
-    let mut pagination = Pagination::builder();
-    pagination.set_cursor(Post::empty());
-    pagination.set_limit(2);
-    pagination.seek_forward();
-
-    let mut new_listing = New {
-        subreddit: Subreddit("artbutler".to_string()),
-        paginator: pagination,
-    };
-    let first_res = api.request(&new_listing).await.unwrap();
-    let batch_a = api
-        .serialize(first_res, new_listing.result_limit())
-        .await
-        .unwrap();
-    if !batch_a.is_empty() {
-        new_listing.update_paginator_cache(&batch_a);
-    }
-
-    let second_res = api.request(&new_listing).await.unwrap();
-    let batch_b = api
-        .serialize(second_res, new_listing.result_limit())
-        .await
-        .unwrap();
-    if !batch_b.is_empty() {
-        new_listing.update_paginator_cache(&batch_b);
-    }
-
-    println!("{:#?}", batch_a);
-    println!("{:#?}", batch_b);
-}
-
-#[tokio::test]
-async fn test_serialize() {
-    let cli = Client::new();
-    let mut api = Api::from(&cli);
-
-    let mut pagination = Pagination::builder();
-    pagination.set_cursor(Post::empty());
-    pagination.set_limit(4);
-
-    let mut new_listing = New {
-        subreddit: Subreddit("artbutler".to_string()),
-        paginator: pagination,
-    };
-
-    let res = api.request(&new_listing).await.unwrap();
-    let parsed = api
-        .serialize(res, new_listing.result_limit())
-        .await
-        .unwrap();
-    assert_eq!(parsed.len(), new_listing.result_limit() as usize);
-
-    let mut cnt = new_listing.result_limit();
-    for post in &parsed {
-        let post_title = format!("Post {}", cnt);
-        assert_eq!(post.title(), post_title);
-        cnt -= 1;
-    }
-    println!("{:#?}", parsed);
-}
-
 #[async_trait]
 impl ListingSource for Api {
     async fn retrieve_posts(&mut self, listing: &mut Listing) -> Result<VecDeque<Post>> {
@@ -367,11 +279,13 @@ impl Pagination {
 
 #[derive(PartialEq, Debug, Clone, Eq, Hash)]
 pub enum Listing {
-    Hot {
+    New {
         subreddit: Subreddit,
         paginator: Pagination,
     },
-    New {
+
+    // TODO: Implement pagination system for these other listing categories.
+    Hot {
         subreddit: Subreddit,
         paginator: Pagination,
     },

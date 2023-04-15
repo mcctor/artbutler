@@ -1,19 +1,9 @@
-FROM rust@sha256:1cdce1c7208150f065dac04b580ab8363a03cff7ddb745ddc2659d58dbc12ea8 as build
-
-COPY src ./
-
+FROM rust:1.68 AS builder
+COPY . .
 RUN cargo build --release
 
-RUN mkdir -p /build-out
 
-RUN cp target/release/artbutler /build-out/
-
-# Ubuntu 18.04
-FROM ubuntu@sha256:5f4bdc3467537cbbe563e80db2c3ec95d548a9145d64453b06939c4592d67b6d
-
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get -y install ca-certificates libssl-dev && rm -rf /var/lib/apt/lists/*
-
-COPY --from=build /build-out/artbutler /
-
-CMD /artbutler
+FROM debian:buster-slim
+COPY --from=builder ./target/release/artbutler ./target/release/artbutler
+RUN apt-get update && apt-get -y install libssl-dev
+CMD ["/target/release/artbutler"]
