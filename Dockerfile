@@ -13,8 +13,8 @@ RUN diesel migration run && cargo build --release
 # Create a new stage for the runtime image
 FROM debian:buster-slim
 
-# Install the OpenSSL library
-RUN apt-get update && apt-get -y install libssl-dev postgresql-12
+# Install the OpenSSL & Posgresql library
+RUN apt-get update && apt-get -y install libssl-dev libpq-dev
 
 # Set the working directory and copy the built binary into the container
 WORKDIR /app
