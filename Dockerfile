@@ -1,10 +1,24 @@
 FROM rust:1.68 AS builder
+
+# Install the diesel_cli tool for running migrations
+RUN cargo install diesel_cli --no-default-features --features postgres
+
+# Set the working directory and copy the project files into the container
+WORKDIR /usr/src/artbutler
 COPY . .
-RUN cargo install diesel_cli --no-default-features --features postgres && diesel migration run && cargo build --release
 
+# Build the project and run the migrations
+RUN diesel migration run && cargo build --release
 
+# Create a new stage for the runtime image
 FROM debian:buster-slim
-COPY --from=builder ./target/release/artbutler ./target/release/artbutler
+
+# Install the OpenSSL library
 RUN apt-get update && apt-get -y install libssl-dev
 
-CMD ["/target/release/artbutler"]
+# Set the working directory and copy the built binary into the container
+WORKDIR /app
+COPY --from=builder /usr/src/artbutler/target/release/artbutler .
+
+# Set the startup command to run the built binary
+CMD ["./artbutler"]
