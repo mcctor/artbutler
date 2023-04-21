@@ -1,31 +1,17 @@
 use std::fmt::Formatter;
 use std::hash::Hasher;
 
-#[derive(PartialEq, Debug, Clone, Eq, Hash)]
-pub struct VoteCount(i32, i32);
+use diesel::prelude::*;
 
-impl VoteCount {
-    pub fn from(upvote: i32, downvote: i32) -> Self {
-        VoteCount(upvote, downvote)
-    }
-
-    pub fn ups(&self) -> i32 {
-        self.0
-    }
-
-    pub fn downs(&self) -> i32 {
-        self.1
-    }
-}
-
-#[derive(Debug, Clone, Eq)]
+#[derive(Queryable, Debug, Clone, Eq)]
 pub struct Post {
-    id: String,
+    pub id: String,
     pub link: String,
     pub media_href: String,
-    title: String,
-    author: String,
-    votes: VoteCount,
+    pub title: String,
+    pub author: String,
+    pub ups: i32,
+    pub downs: i32,
 }
 
 impl Post {
@@ -35,7 +21,7 @@ impl Post {
         media_href: String,
         author: String,
         title: String,
-        votecount: VoteCount,
+        vote_count: (i32, i32),
     ) -> Self {
         Post {
             id,
@@ -43,7 +29,8 @@ impl Post {
             media_href,
             title,
             author,
-            votes: votecount,
+            ups: vote_count.0,
+            downs: vote_count.1,
         }
     }
 
@@ -54,7 +41,8 @@ impl Post {
             media_href: String::new(),
             title: String::new(),
             author: String::new(),
-            votes: VoteCount(0, 0),
+            ups: 0,
+            downs: 0,
         }
     }
 
@@ -76,7 +64,7 @@ impl PartialEq for Post {
 impl std::hash::Hash for Post {
     fn hash<H>(&self, state: &mut H)
     where
-        H: std::hash::Hasher,
+        H: Hasher,
     {
         state.write(self.id.as_bytes());
         state.finish();
@@ -87,4 +75,49 @@ impl std::fmt::Display for Post {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(format!("Post {}", self.id).as_str())
     }
+}
+
+#[derive(Copy, Clone, PartialEq)]
+pub struct ClientID(i64);
+
+impl ClientID {
+    pub fn id(&self) -> i64 {
+        self.0
+    }
+}
+
+impl From<i64> for ClientID {
+    fn from(value: i64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<ClientID> for i64 {
+    fn from(value: ClientID) -> Self {
+        value.0
+    }
+}
+
+#[derive(Queryable, Clone)]
+pub struct Client {
+    #[diesel(deserialize_as = i64)]
+    pub id: ClientID,
+
+    pub username: String,
+    pub is_user: bool,
+}
+
+impl PartialEq for Client {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+#[derive(Queryable, Debug)]
+pub struct SubscribedListing {
+    pub id: i32,
+    pub user_id: i64,
+    pub subreddit: String,
+    pub category: String,
+    pub head_post_id: Option<String>,
 }

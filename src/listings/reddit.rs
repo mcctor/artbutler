@@ -10,7 +10,7 @@ use reqwest::{Client, Response, Result};
 use serde_json::Value;
 use tokio::time::Instant;
 
-use crate::content::{Post, VoteCount};
+use crate::content::Post;
 use crate::listings::reddit::Listing::{Hot, New, Random, Rising, Sort};
 use crate::listings::source::ListingSource;
 
@@ -180,7 +180,7 @@ impl Api {
             fields.remove("url").unwrap(),
             fields.remove("author").unwrap(),
             fields.remove("title").unwrap(),
-            VoteCount::from(ups, downs),
+            (ups, downs),
         )
     }
 

@@ -1,10 +1,17 @@
-use log::info;
 use std::collections::VecDeque;
+use std::env;
+use std::sync::Arc;
+
+use diesel::pg::PgConnection;
+use diesel::prelude::*;
+use dotenvy::dotenv;
 
 use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::Mutex;
 
-use crate::content::Post;
+use crate::content::{Client, ClientID, Post};
 use crate::curator::Curator;
+use crate::listings::reddit::{Api, Listing};
 use crate::listings::source::ListingSource;
 
 pub trait Filter {
@@ -35,68 +42,86 @@ impl Filter for SimilarFilter {
     }
 }
 
-#[derive(Copy, Clone, PartialEq)]
-pub struct ClientID(pub u64);
-
-pub struct UserAggregator<S> {
+pub struct UserAggregator<SRC> {
     id: ClientID,
-    curator: Curator<S>,
+    pub curator: Option<Curator<SRC>>,
+    listings: VecDeque<Listing>,
     cache: VecDeque<Post>,
     pub chan: (Sender<Post>, Receiver<Post>),
 }
 
-impl<S> UserAggregator<S>
+impl<SRC> UserAggregator<SRC>
 where
-    S: ListingSource + Send + Sync + 'static,
+    SRC: ListingSource + Send + Sync + 'static,
 {
-    pub fn new(id: ClientID, curator: Curator<S>) -> Self {
+    fn new(id: ClientID) -> Self {
         let (tx, rcv) = channel(10);
         UserAggregator {
             id,
-            curator,
+            listings: Default::default(),
             cache: VecDeque::with_capacity(5),
             chan: (tx, rcv),
+            curator: None,
         }
     }
 
-    pub async fn listen(&mut self) {
-        while let Some(post) = self.curator.chan.1.recv().await {
-            self.cache.push_back(post.clone());
-            info!("{:?}", post.clone());
-            self.chan.0.send(post).await.unwrap();
+    pub fn add_listing(&mut self, category: Listing) {
+        if self.curator.is_none() {
+            panic!("must attach a Curator to an UserAggregator before calling UserAggregator::add_listing")
         }
+        let listing = Arc::new(Mutex::new(category));
+        self.curator.as_mut().unwrap().spawn_for(listing);
+    }
+
+    pub fn attach_curator(&mut self, curator: Curator<SRC>) {
+        self.curator = Some(curator);
     }
 }
 
-pub struct AggregatorStore<S> {
-    store: Vec<UserAggregator<S>>,
+pub struct AggregatorStore {
+    db: PgConnection,
 }
 
-impl<S> AggregatorStore<S>
-where
-    S: Send + Sync,
-{
-    pub fn new() -> Self {
-        Self { store: vec![] }
-    }
+impl AggregatorStore {
+    pub fn instance() -> Self {
+        use crate::content::*;
+        use crate::schema::botclients::dsl::*;
 
-    pub fn find_for(&mut self, client: ClientID) -> Option<&mut UserAggregator<S>> {
-        self.store.iter_mut().find_map(|a| {
-            if a.id == client {
-                return Some(a);
-            }
-            None
-        })
-    }
-
-    pub fn create(&mut self, client_id: ClientID) -> &mut UserAggregator<S> {
-        let is_found = self.find_for(client_id);
-        if is_found.is_some() {
-            return is_found.unwrap();
+        // let mut db = Self::db_instance();
+        // let existing_clients = botclients.load::<Client>(&mut db);
+        //
+        Self {
+            db: Self::db_instance(),
         }
-        // let aggr = UserAggregator::new(client_id);
-        // self.store.push(aggr);
-        // self.store.get_mut(self.store.len() - 0).unwrap()
+    }
+
+    fn db_instance() -> PgConnection {
+        dotenv().ok();
+        let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        PgConnection::establish(&database_url)
+            .unwrap_or_else(|_| panic!("Error connecting to {}", database_url))
+    }
+
+    pub fn find(&mut self, client: ClientID) -> Option<UserAggregator<Api>> {
+        use crate::content::*;
+        use crate::schema::subscribed_listings::dsl::*;
+
+        let listings = subscribed_listings
+            .filter(user_id.eq(client.id()))
+            .load::<SubscribedListing>(&mut self.db)
+            .expect("error loading subscribed listings.");
+
+        let mut aggregator: UserAggregator<Api> = UserAggregator::new(client);
+        aggregator.attach_curator(Curator::from(Api::from(&reqwest::Client::new())));
+        for listing in listings {
+            let listing = Listing::from(listing.category.as_str(), listing.subreddit.into());
+            aggregator.add_listing(listing);
+        }
+
+        Some(aggregator)
+    }
+
+    pub fn create(&mut self, client_id: ClientID) -> &mut UserAggregator<Api> {
         todo!()
     }
 }

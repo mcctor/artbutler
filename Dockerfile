@@ -1,9 +1,14 @@
-FROM rust:1.68 AS builder
+# Use a Rust runtime as the base image
+FROM rust:1.53.0-slim-buster
+
+# Create a new directory to store the project
+WORKDIR /app
+
+# Copy the project files into the container
 COPY . .
+
+# Build the project using cargo
 RUN cargo build --release
 
-
-FROM debian:buster-slim
-COPY --from=builder ./target/release/artbutler ./target/release/artbutler
-RUN apt-get update && apt-get -y install libssl-dev
-CMD ["/target/release/artbutler"]
+# Set the startup command to run the built executable
+CMD ["./target/release/artbutler"]

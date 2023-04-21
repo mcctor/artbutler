@@ -1,8 +1,8 @@
-use crate::aggregator::{AggregatorStore, ClientID};
-use crate::content::Post;
+use crate::aggregator::AggregatorStore;
+use crate::content::{ClientID, Post};
 use crate::curator::Curator;
 use crate::listings::reddit;
-use log::info;
+use log::{info, warn};
 use reqwest::{Client, Url};
 use std::sync::Arc;
 use teloxide::payloads::SendPhotoSetters;
@@ -19,28 +19,35 @@ use crate::telegram::Command::{Listen, Silence};
 pub async fn listen_silence_handler(
     tg_bot: Bot,
     msg: Message,
-    aggr_store: Arc<AggregatorStore<Api>>,
+    mut store: Arc<Mutex<AggregatorStore>>,
 ) -> ResponseResult<()> {
     let msg = msg.clone();
     let bot = tg_bot.clone();
 
     // let user_aggr = aggr_store.create(ClientID(msg.from().unwrap().id.0));
-    let cmd = Command::parse(&msg).expect("unable to parse command from message");
-    match cmd {
+    let cmd = Command::parse(&msg);
+    if cmd.is_err() {
+        warn!(
+            "Non-existent command requested by Client: {}",
+            msg.from().unwrap().id
+        );
+        return Ok(());
+    }
+    match cmd.unwrap() {
         Listen { 0: listing } => {
             info!(
-                "`/listen` command requested by userid: {} in chatid:{}",
+                "`/listen` command requested by userid: {} in chatid: {}",
                 msg.from().unwrap().id,
                 msg.chat.id
             );
+            let mut guard = store.lock().await;
+            let mut user = guard.find(msg.chat.id.0.into()).unwrap();
+
             let task = async move {
-                let mut reddit = reddit::Api::from(&Client::new());
-                reddit.authenticate_or_refresh().await.unwrap();
+                user.attach_curator(Curator::from(Api::from(&Client::new())));
+                user.add_listing(listing);
 
-                let mut curator = Curator::from(reddit);
-                curator.spawn_for(Arc::new(Mutex::new(listing)));
-
-                while let Some(post) = curator.chan.1.recv().await {
+                while let Some(post) = user.curator.as_mut().unwrap().chan.1.recv().await {
                     let url = Url::parse(post.link.as_str()).unwrap();
                     let file = InputFile::url(url);
                     if let Ok(v) = bot

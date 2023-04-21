@@ -86,8 +86,6 @@ impl<T: ListingSource> Curator<T> {
     pub fn spawn_for(&mut self, listing: Arc<Mutex<Listing>>) {
         let api = self.src.clone();
         let tx = self.chan.0.clone();
-        let listing = listing.clone();
-
         let task = spawn(Self::listing_listener(
             api,
             tx,
@@ -108,7 +106,7 @@ impl<T: ListingSource> Curator<T> {
 
         loop {
             let mut synced_posts = VecDeque::new();
-            let mut sub = Subreddit::from("");
+            let mut sub = "".into();
             {
                 let mut listing_guard = listing.lock().await;
                 sub = listing_guard.subreddit().clone();
@@ -174,7 +172,6 @@ impl<T: ListingSource> Curator<T> {
                     {
                         info!("Polling timeout for `r/{}`, retrying ...", sub.name());
                         let mut listing_guard = listing.lock().await;
-
                         match listing_guard.paginator().cursor() {
                             Seek::After { .. } => {
                                 let mut deck = VecDeque::new();

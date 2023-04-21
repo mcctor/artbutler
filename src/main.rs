@@ -1,4 +1,4 @@
-use crate::aggregator::{AggregatorStore, ClientID, UserAggregator};
+use crate::aggregator::{AggregatorStore, UserAggregator};
 use crate::curator::Curator;
 use crate::listings::reddit::{self, Api, Listing, Pagination, Seek, Subreddit};
 use dotenvy::dotenv;
@@ -12,6 +12,7 @@ use teloxide::{dptree, Bot};
 
 use crate::content::Post;
 use crate::listings::reddit::Listing::New;
+use content::ClientID;
 use tokio::sync::Mutex;
 
 mod aggregator;
@@ -19,6 +20,7 @@ mod content;
 mod curator;
 mod imgproc;
 mod listings;
+mod schema;
 mod telegram;
 
 #[tokio::main]
@@ -28,11 +30,12 @@ async fn main() {
     info!("Starting command bot...");
 
     let bot = Bot::from_env();
+
+    let store = AggregatorStore::instance();
+    let store = Arc::new(Mutex::new(store));
     let handler =
         dptree::entry().branch(Update::filter_message().endpoint(telegram::listen_silence_handler));
 
-    let curation = Box::new(Curator::from(Api::from(&Client::new())));
-    let store: Arc<AggregatorStore<Api>> = Arc::new(AggregatorStore::new());
     Dispatcher::builder(bot, handler)
         .enable_ctrlc_handler()
         .dependencies(dptree::deps![store])
