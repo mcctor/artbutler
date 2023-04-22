@@ -44,12 +44,7 @@ pub async fn listen_silence_handler(
             let mut user = guard.find(msg.chat.id.0.into()).unwrap();
 
             let task = async move {
-                let client = ClientBuilder::new()
-                    .danger_accept_invalid_certs(true)
-                    .build()
-                    .unwrap();
-
-                user.attach_curator(Curator::from(Api::from(&client)));
+                user.attach_curator(Curator::from(Api::from(&Client::new())));
                 user.add_listing(listing);
 
                 while let Some(post) = user.curator.as_mut().unwrap().chan.1.recv().await {
