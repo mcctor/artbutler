@@ -20,5 +20,8 @@ RUN apt-get update && apt-get -y install libssl-dev libpq-dev
 WORKDIR /app
 COPY --from=builder /usr/src/artbutler/target/release/artbutler .
 
+# Copy the .env file into the container
+COPY .env ./.env
+
 # Set the startup command to run the built binary
 CMD ["./artbutler"]
