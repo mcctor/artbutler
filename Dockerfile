@@ -1,4 +1,4 @@
-ROM rust:1.68 AS builder
+FROM rust:1.68 AS builder
 
 # Install the diesel_cli tool for running migrations
 RUN cargo install diesel_cli --no-default-features --features postgres
