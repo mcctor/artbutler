@@ -14,21 +14,14 @@ RUN diesel migration run && cargo build --release
 FROM debian:buster-slim
 
 # Install the OpenSSL & Posgresql library
-RUN apt-get update && apt-get -y install libssl-dev libpq-dev openssl
-
-# Generate a self-signed certificate
-RUN openssl req -new -newkey rsa:2048 -nodes -keyout key.pem -x509 -days 365 -out cert.pem -subj "/C=KE/ST=NAIROBI/L=NAIROBI/O=mcctor/OU=ArtButler/CN=render.com"
-
-# Set the certificate and private key permissions
-RUN chmod 600 key.pem cert.pem
-
-# Copy the certificate and private key to the container
-COPY cert.pem /etc/ssl/certs/
-COPY key.pem /etc/ssl/private/
+RUN apt-get update && apt-get -y install libssl-dev libpq-dev
 
 # Set the working directory and copy the built binary into the container
 WORKDIR /app
 COPY --from=builder /usr/src/artbutler/target/release/artbutler .
+
+# Copy the .env file into the container
+COPY .env ./.env
 
 # Set the startup command to run the built binary
 CMD ["./artbutler"]
