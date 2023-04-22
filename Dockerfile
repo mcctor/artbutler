@@ -14,7 +14,7 @@ RUN diesel migration run && cargo build --release
 FROM debian:buster-slim
 
 # Install the OpenSSL & Posgresql library
-RUN apt-get update && apt-get -y install libssl-dev libpq-dev
+RUN apt-get update && apt-get -y install libpq-dev
 
 # Set the working directory and copy the built binary into the container
 WORKDIR /app
