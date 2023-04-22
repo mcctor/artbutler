@@ -5,6 +5,7 @@ use std::sync::Arc;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use dotenvy::dotenv;
+use reqwest::ClientBuilder;
 
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
@@ -111,8 +112,13 @@ impl AggregatorStore {
             .load::<SubscribedListing>(&mut self.db)
             .expect("error loading subscribed listings.");
 
+        let client_req = ClientBuilder::new()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap();
+
         let mut aggregator: UserAggregator<Api> = UserAggregator::new(client);
-        aggregator.attach_curator(Curator::from(Api::from(&reqwest::Client::new())));
+        aggregator.attach_curator(Curator::from(Api::from(&client_req)));
         for listing in listings {
             let listing = Listing::from(listing.category.as_str(), listing.subreddit.into());
             aggregator.add_listing(listing);

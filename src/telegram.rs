@@ -3,7 +3,7 @@ use crate::content::{ClientID, Post};
 use crate::curator::Curator;
 use crate::listings::reddit;
 use log::{info, warn};
-use reqwest::{Client, Url};
+use reqwest::{Client, ClientBuilder, Url};
 use std::sync::Arc;
 use teloxide::payloads::SendPhotoSetters;
 use teloxide::prelude::{Message, Requester, ResponseResult};
@@ -44,7 +44,12 @@ pub async fn listen_silence_handler(
             let mut user = guard.find(msg.chat.id.0.into()).unwrap();
 
             let task = async move {
-                user.attach_curator(Curator::from(Api::from(&Client::new())));
+                let client = ClientBuilder::new()
+                    .danger_accept_invalid_certs(true)
+                    .build()
+                    .unwrap();
+
+                user.attach_curator(Curator::from(Api::from(&client)));
                 user.add_listing(listing);
 
                 while let Some(post) = user.curator.as_mut().unwrap().chan.1.recv().await {
