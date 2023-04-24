@@ -7,10 +7,11 @@ use diesel::prelude::*;
 use dotenvy::dotenv;
 use reqwest::ClientBuilder;
 
+use crate::auth::{BotClient, ClientID};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 
-use crate::content::{Client, ClientID, Post};
+use crate::content::Post;
 use crate::curator::Curator;
 use crate::listings::reddit::{Api, Listing};
 use crate::listings::source::ListingSource;
