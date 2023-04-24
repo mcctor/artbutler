@@ -12,10 +12,12 @@ use teloxide::{dptree, Bot};
 
 use crate::content::Post;
 use crate::listings::reddit::Listing::New;
-use content::ClientID;
+use auth::ClientID;
 use tokio::sync::Mutex;
+use crate::auth::ClientManager;
 
 mod aggregator;
+mod auth;
 mod content;
 mod curator;
 mod imgproc;
@@ -32,13 +34,15 @@ async fn main() {
     let bot = Bot::from_env();
 
     let store = AggregatorStore::instance();
+    let clients = Arc::new(Mutex::new(ClientManager::instance()));
+    
     let store = Arc::new(Mutex::new(store));
     let handler =
         dptree::entry().branch(Update::filter_message().endpoint(telegram::listen_silence_handler));
 
     Dispatcher::builder(bot, handler)
         .enable_ctrlc_handler()
-        .dependencies(dptree::deps![store])
+        .dependencies(dptree::deps![store, clients])
         .build()
         .dispatch()
         .await;

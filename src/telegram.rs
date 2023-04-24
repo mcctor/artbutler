@@ -1,13 +1,15 @@
 use crate::aggregator::AggregatorStore;
-use crate::content::{ClientID, Post};
+use crate::auth::{BotClient, ClientID, ClientManager};
+use crate::content::Post;
 use crate::curator::Curator;
 use crate::listings::reddit;
 use log::{info, warn};
-use reqwest::{Client, ClientBuilder, Url};
+
+use reqwest::{Client, Url};
 use std::sync::Arc;
 use teloxide::payloads::SendPhotoSetters;
 use teloxide::prelude::{Message, Requester, ResponseResult};
-use teloxide::types::{InputFile, ParseMode};
+use teloxide::types::{InputFile, Me, ParseMode};
 use teloxide::Bot;
 use tokio::spawn;
 use tokio::sync::Mutex;
@@ -18,11 +20,27 @@ use crate::telegram::Command::{Listen, Silence};
 
 pub async fn listen_silence_handler(
     tg_bot: Bot,
+    me: Me,
     msg: Message,
     mut store: Arc<Mutex<AggregatorStore>>,
+    mut clients: Arc<Mutex<ClientManager>>,
 ) -> ResponseResult<()> {
     let msg = msg.clone();
     let bot = tg_bot.clone();
+
+    let mut request_user = None;
+    {
+        let mut cli_manager = clients.lock().await;
+        let v = cli_manager.get(msg.chat.id.0.into());
+        if v.is_none() {
+            cli_manager.add(BotClient {
+                id: msg.chat.id.0.into(),
+                username: msg.from().unwrap().username.clone(),
+                is_user: true,
+            });
+        }
+        request_user = Some(cli_manager.get(msg.chat.id.0.into()).unwrap().clone());
+    }
 
     // let user_aggr = aggr_store.create(ClientID(msg.from().unwrap().id.0));
     let cmd = Command::parse(&msg);

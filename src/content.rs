@@ -77,42 +77,6 @@ impl std::fmt::Display for Post {
     }
 }
 
-#[derive(Copy, Clone, PartialEq)]
-pub struct ClientID(i64);
-
-impl ClientID {
-    pub fn id(&self) -> i64 {
-        self.0
-    }
-}
-
-impl From<i64> for ClientID {
-    fn from(value: i64) -> Self {
-        Self(value)
-    }
-}
-
-impl From<ClientID> for i64 {
-    fn from(value: ClientID) -> Self {
-        value.0
-    }
-}
-
-#[derive(Queryable, Clone)]
-pub struct Client {
-    #[diesel(deserialize_as = i64)]
-    pub id: ClientID,
-
-    pub username: String,
-    pub is_user: bool,
-}
-
-impl PartialEq for Client {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
 #[derive(Queryable, Debug)]
 pub struct SubscribedListing {
     pub id: i32,
