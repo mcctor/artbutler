@@ -7,7 +7,7 @@ use diesel::prelude::*;
 use dotenvy::dotenv;
 use reqwest::ClientBuilder;
 
-use crate::auth::{BotClient, ClientID};
+use crate::botclient::{BotClient, ClientID};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 

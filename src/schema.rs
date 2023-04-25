@@ -21,6 +21,15 @@ diesel::table! {
 }
 
 diesel::table! {
+    posts (id) {
+        id -> Int4,
+        title -> Varchar,
+        body -> Text,
+        published -> Bool,
+    }
+}
+
+diesel::table! {
     subscribed_listings (id) {
         id -> Int4,
         user_id -> Int8,
@@ -36,5 +45,6 @@ diesel::joinable!(subscribed_listings -> botclients (user_id));
 diesel::allow_tables_to_appear_in_same_query!(
     artposts,
     botclients,
+    posts,
     subscribed_listings,
 );
