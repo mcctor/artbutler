@@ -108,28 +108,35 @@ impl<T: ListingSource> Curator<T> {
             let mut synced_posts = VecDeque::new();
             let mut sub = "".into();
             {
-                let mut listing_guard = listing.lock().await;
-                sub = listing_guard.subreddit().clone();
+                let mut retrieved_posts = None;
+                {
+                    let mut listing_guard = listing.lock().await;
+                    sub = listing_guard.subreddit().clone();
 
-                let res = api.retrieve_posts(&mut listing_guard).await;
-                if res.is_err() {
-                    error!("couldn't retrieve posts: {}", res.err().unwrap());
+                    retrieved_posts = Some(api.retrieve_posts(&mut listing_guard).await);
+                }
+
+                let posts = retrieved_posts.unwrap();
+                if posts.is_err() {
+                    error!("couldn't retrieve posts: {}", posts.err().unwrap());
                     warn!("Retrying post retrieval in 10s");
 
                     sleep_until(Instant::now() + Duration::from_secs(10)).await;
                     continue;
                 }
 
-                let posts = res.unwrap();
-                match listing_guard.paginator().cursor() {
-                    Seek::After { .. } => {
-                        for post in posts {
-                            synced_posts.push_back(post);
+                let mut posts = posts.unwrap();
+                {
+                    let mut listing_guard = listing.lock().await;
+                    sub = listing_guard.subreddit().clone();
+                    match listing_guard.paginator().cursor() {
+                        Seek::After { .. } => {
+                            synced_posts.append(&mut posts);
                         }
-                    }
-                    Seek::Back { .. } => {
-                        for post in posts {
-                            synced_posts.push_front(post);
+                        Seek::Back { .. } => {
+                            for post in posts {
+                                synced_posts.push_front(post);
+                            }
                         }
                     }
                 }
@@ -178,10 +185,8 @@ impl<T: ListingSource> Curator<T> {
                                 deck.push_back(Post::empty());
                                 listing_guard.update_paginator_cache(&deck);
 
-                                let res = api.retrieve_posts(&mut listing_guard).await.unwrap();
-                                for post in res {
-                                    synced_posts.push_back(post);
-                                }
+                                let mut res = api.retrieve_posts(&mut listing_guard).await.unwrap();
+                                synced_posts.append(&mut res);
                             }
                             Seek::Back { .. } => {
                                 info!("Finished polling back, no more posts. Exiting ...");

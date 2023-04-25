@@ -1,5 +1,5 @@
 use crate::aggregator::AggregatorStore;
-use crate::auth::{BotClient, ClientID, ClientManager};
+use crate::botclient::{BotClient, ClientID, ClientManager};
 use crate::content::Post;
 use crate::curator::Curator;
 use crate::listings::reddit;
@@ -20,46 +20,56 @@ use crate::telegram::Command::{Listen, Silence};
 
 pub async fn listen_silence_handler(
     tg_bot: Bot,
-    me: Me,
     msg: Message,
-    mut store: Arc<Mutex<AggregatorStore>>,
-    mut clients: Arc<Mutex<ClientManager>>,
+    aggr_store: Arc<Mutex<AggregatorStore>>,
+    cli_mgr: Arc<Mutex<ClientManager>>,
 ) -> ResponseResult<()> {
     let msg = msg.clone();
     let bot = tg_bot.clone();
+    let chat_id = msg.chat.id.0;
 
     let mut request_user = None;
     {
-        let mut cli_manager = clients.lock().await;
-        let v = cli_manager.get(msg.chat.id.0.into());
-        if v.is_none() {
-            cli_manager.add(BotClient {
-                id: msg.chat.id.0.into(),
-                username: msg.from().unwrap().username.clone(),
-                is_user: true,
-            });
+        let mut cli_manager = cli_mgr.lock().await;
+        if let Some(client) = cli_manager.get(chat_id.into()) {
+            request_user = Some(client);
+        } else {
+            let client = cli_manager.add_new_user(
+                chat_id.into(),
+                {
+                    if let Some(v) = msg.from() {
+                        v.username.clone()
+                    } else {
+                        None
+                    }
+                },
+                {
+                    if let Some(v) = msg.from() {
+                        !v.is_bot
+                    } else {
+                        false
+                    }
+                },
+            );
+            request_user = Some(client);
         }
-        request_user = Some(cli_manager.get(msg.chat.id.0.into()).unwrap().clone());
     }
 
-    // let user_aggr = aggr_store.create(ClientID(msg.from().unwrap().id.0));
+    let request_user = request_user.unwrap();
     let cmd = Command::parse(&msg);
     if cmd.is_err() {
-        warn!(
-            "Non-existent command requested by Client: {}",
-            msg.from().unwrap().id
-        );
+        warn!("Non-existent command requested by {:?}", request_user.id());
         return Ok(());
     }
     match cmd.unwrap() {
         Listen { 0: listing } => {
             info!(
-                "`/listen` command requested by userid: {} in chatid: {}",
-                msg.from().unwrap().id,
-                msg.chat.id
+                "`/listen` command requested by {:?} in ChatID: {}",
+                request_user.id(),
+                chat_id
             );
-            let mut guard = store.lock().await;
-            let mut user = guard.find(msg.chat.id.0.into()).unwrap();
+            let mut guard = aggr_store.lock().await;
+            let mut user = guard.find(request_user.id().into()).unwrap();
 
             let task = async move {
                 user.attach_curator(Curator::from(Api::from(&Client::new())));

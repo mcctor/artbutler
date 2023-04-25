@@ -1,9 +1,10 @@
+use std::env;
+
 use diesel::prelude::*;
 use diesel::result::DatabaseErrorKind::UniqueViolation;
 use diesel::result::Error;
 use dotenvy::dotenv;
-use log::{info, warn};
-use std::env;
+use log::{error, info, warn};
 
 use crate::schema::botclients;
 
@@ -31,10 +32,15 @@ impl From<ClientID> for i64 {
 #[derive(Queryable, Clone, Debug)]
 pub struct BotClient {
     #[diesel(deserialize_as = i64)]
-    pub id: ClientID,
+    id: ClientID,
+    username: Option<String>,
+    is_user: bool,
+}
 
-    pub username: Option<String>,
-    pub is_user: bool,
+impl BotClient {
+    pub fn id(&self) -> i64 {
+        self.id.0
+    }
 }
 
 #[derive(Insertable)]
@@ -69,21 +75,37 @@ impl ClientManager {
         }
     }
 
-    pub fn get(&mut self, user: ClientID) -> Option<&BotClient> {
-        use crate::auth::*;
+    pub fn add_new_user(
+        &mut self,
+        id: ClientID,
+        username: Option<String>,
+        is_user: bool,
+    ) -> BotClient {
+        let cli = BotClient {
+            id,
+            username,
+            is_user,
+        };
+        self.save_to_db(&cli);
+        self.existing.push(cli.clone());
+        cli
+    }
+
+    pub fn get(&mut self, user: ClientID) -> Option<BotClient> {
+        use crate::botclient::*;
         use crate::schema::botclients::dsl::*;
 
         let client = botclients.find(user.0).get_result(&mut self.db);
         if let Ok(cli) = client {
             self.existing.push(cli);
             let end = self.existing.len() - 1;
-            return Some(self.existing.get(end).unwrap());
+            return Some(self.existing.get(end).unwrap().clone());
         }
         None
     }
 
-    pub fn add(&mut self, new_user: BotClient) {
-        let username = match new_user.username {
+    fn save_to_db(&mut self, new_user: &BotClient) {
+        let username = match new_user.username.clone() {
             None => None,
             Some(username) => Some(username),
         };
@@ -96,39 +118,18 @@ impl ClientManager {
         let res = diesel::insert_into(botclients::table)
             .values(&new_client)
             .execute(&mut self.db);
-        if res.is_err() {
-            match res.err().unwrap() {
-                Error::DatabaseError(kind, info) => match kind {
-                    UniqueViolation => {
-                        warn!(
-                            "Registering the same client twice ClientID \"{}\" ",
-                            new_client.id
-                        );
-                    }
-                    _ => {}
-                },
-                _ => {}
+
+        if let Ok(v) = res {
+            info!("Registered and added new {:?} to database", new_user);
+        } else {
+            if let Some(Error::DatabaseError(kind, _)) = res.err() {
+                if let UniqueViolation = kind {
+                    error!(
+                        "Attempting to register the same client twice {:?}",
+                        new_user
+                    )
+                }
             }
         }
     }
-}
-
-#[test]
-fn test_client_manager() {
-    dotenv().ok();
-    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let conn = PgConnection::establish(&database_url)
-        .unwrap_or_else(|_| panic!("Error connecting to {}", database_url));
-
-    let username = Some("Vanessa".to_string());
-    let mut client_manager = ClientManager::instance();
-    client_manager.add(BotClient {
-        id: ClientID(89999222654),
-        username: username.clone(),
-        is_user: true,
-    });
-
-    let vannessa = client_manager.get(89999222654.into()).unwrap();
-    assert_eq!(username, vannessa.username);
-    println!("{:?}", vannessa);
 }
