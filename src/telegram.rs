@@ -1,21 +1,18 @@
-use crate::aggregator::AggregatorStore;
-use crate::botclient::{BotClient, ClientID, ClientManager};
-use crate::content::Post;
-use crate::curator::Curator;
-use crate::listings::reddit;
-use log::{info, warn};
-
-use reqwest::{Client, Url};
 use std::sync::Arc;
+
+use log::{info, warn};
+use reqwest::{Client, Url};
+use teloxide::Bot;
 use teloxide::payloads::SendPhotoSetters;
 use teloxide::prelude::{Message, Requester, ResponseResult};
 use teloxide::types::{InputFile, Me, ParseMode};
-use teloxide::Bot;
 use tokio::spawn;
 use tokio::sync::Mutex;
 
-use crate::listings::reddit::Listing::New;
-use crate::listings::reddit::{Api, Listing, Pagination, Subreddit};
+use crate::aggregator::AggregatorStore;
+use crate::botclient::ClientManager;
+use crate::curator::Curator;
+use crate::listings::reddit::{Api, Listing, Subreddit};
 use crate::telegram::Command::{Listen, Silence};
 
 pub async fn listen_silence_handler(

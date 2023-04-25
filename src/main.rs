@@ -1,20 +1,14 @@
-use crate::aggregator::{AggregatorStore, UserAggregator};
-use crate::curator::Curator;
-use crate::listings::reddit::{self, Api, Listing, Pagination, Seek, Subreddit};
-use dotenvy::dotenv;
-
-use log::info;
-use reqwest::Client;
 use std::sync::Arc;
+
+use dotenvy::dotenv;
+use log::info;
+use teloxide::{Bot, dptree};
 use teloxide::dispatching::UpdateFilterExt;
 use teloxide::prelude::{Dispatcher, Update};
-use teloxide::{dptree, Bot};
-
-use crate::botclient::ClientManager;
-use crate::content::Post;
-use crate::listings::reddit::Listing::New;
-use botclient::ClientID;
 use tokio::sync::Mutex;
+
+use crate::aggregator::AggregatorStore;
+use crate::botclient::ClientManager;
 
 mod aggregator;
 mod botclient;

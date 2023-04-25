@@ -5,12 +5,10 @@ use std::sync::Arc;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use dotenvy::dotenv;
-use reqwest::ClientBuilder;
-
-use crate::botclient::{BotClient, ClientID};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 
+use crate::botclient::ClientID;
 use crate::content::Post;
 use crate::curator::Curator;
 use crate::listings::reddit::{Api, Listing};

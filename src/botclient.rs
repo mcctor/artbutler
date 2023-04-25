@@ -4,7 +4,7 @@ use diesel::prelude::*;
 use diesel::result::DatabaseErrorKind::UniqueViolation;
 use diesel::result::Error;
 use dotenvy::dotenv;
-use log::{error, info, warn};
+use log::{error, info};
 
 use crate::schema::botclients;
 
