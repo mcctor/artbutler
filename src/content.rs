@@ -3,6 +3,8 @@ use std::hash::Hasher;
 
 use diesel::prelude::*;
 
+use crate::schema::subscribed_listings;
+
 #[derive(Queryable, Debug, Clone, Eq)]
 pub struct Post {
     pub id: String,
@@ -79,7 +81,15 @@ impl std::fmt::Display for Post {
 
 #[derive(Queryable, Debug)]
 pub struct SubscribedListing {
-    pub id: i32,
+    pub user_id: i64,
+    pub subreddit: String,
+    pub category: String,
+    pub head_post_id: Option<String>,
+}
+
+#[derive(Insertable, Debug)]
+#[diesel(table_name = subscribed_listings)]
+pub struct NewlySubscribedListing {
     pub user_id: i64,
     pub subreddit: String,
     pub category: String,

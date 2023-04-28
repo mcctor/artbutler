@@ -32,6 +32,15 @@ pub struct Api {
     has_token: Option<BearerToken>,
 }
 
+impl Default for Api {
+    fn default() -> Self {
+        Self {
+            cli: reqwest::Client::new(),
+            has_token: None,
+        }
+    }
+}
+
 #[async_trait]
 impl ListingSource for Api {
     async fn retrieve_posts(&mut self, listing: &mut Listing) -> reqwest::Result<VecDeque<Post>> {
@@ -345,7 +354,7 @@ impl Listing {
         match self {
             Random { subreddit } => {
                 href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
-                href_buf.push_str(self.listing_tag());
+                href_buf.push_str(self.tag());
             }
             Sort {
                 subreddit,
@@ -353,7 +362,7 @@ impl Listing {
                 paginator: params,
             } => {
                 href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
-                href_buf.push_str(self.listing_tag());
+                href_buf.push_str(self.tag());
                 href_buf.push_str(self.url_args(params).as_str());
             }
             Hot {
@@ -361,7 +370,7 @@ impl Listing {
                 paginator: params,
             } => {
                 href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
-                href_buf.push_str(self.listing_tag());
+                href_buf.push_str(self.tag());
                 href_buf.push_str(self.url_args(params).as_str());
             }
             New {
@@ -369,7 +378,7 @@ impl Listing {
                 paginator: params,
             } => {
                 href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
-                href_buf.push_str(self.listing_tag());
+                href_buf.push_str(self.tag());
                 href_buf.push_str(self.url_args(params).as_str());
             }
             Rising {
@@ -377,7 +386,7 @@ impl Listing {
                 paginator: params,
             } => {
                 href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
-                href_buf.push_str(self.listing_tag());
+                href_buf.push_str(self.tag());
                 href_buf.push_str(self.url_args(params).as_str());
             }
         };
@@ -452,7 +461,7 @@ impl Listing {
         }
     }
 
-    fn listing_tag(&self) -> &'static str {
+    pub fn tag(&self) -> &'static str {
         match self {
             Hot { .. } => "hot",
             New { .. } => "new",
@@ -504,6 +513,6 @@ impl Listing {
 
 impl ToString for Listing {
     fn to_string(&self) -> String {
-        self.listing_tag().to_string()
+        self.tag().to_string()
     }
 }

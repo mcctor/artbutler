@@ -5,76 +5,94 @@ use std::sync::Arc;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use dotenvy::dotenv;
+use tokio::spawn;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard};
 
 use crate::botclient::ClientID;
-use crate::content::Post;
+use crate::content::{NewlySubscribedListing, Post};
 use crate::curator::Curator;
 use crate::listings::reddit::{Api, Listing};
 use crate::listings::source::ListingSource;
-
-pub trait Filter {
-    fn check(&self, post: &Post) -> bool;
-}
-
-pub struct VoteCountFilter;
-
-impl Filter for VoteCountFilter {
-    fn check(&self, post: &Post) -> bool {
-        todo!()
-    }
-}
-
-pub struct BlockedFilter;
-
-impl Filter for BlockedFilter {
-    fn check(&self, post: &Post) -> bool {
-        todo!()
-    }
-}
-
-pub struct SimilarFilter;
-
-impl Filter for SimilarFilter {
-    fn check(&self, post: &Post) -> bool {
-        todo!()
-    }
-}
+use crate::schema::subscribed_listings;
 
 pub struct UserAggregator<SRC> {
     id: ClientID,
-    pub curator: Option<Curator<SRC>>,
-    listings: VecDeque<Listing>,
-    cache: VecDeque<Post>,
-    pub chan: (Sender<Post>, Receiver<Post>),
+    curator: Curator<SRC>,
+    pub listings: VecDeque<Arc<Mutex<Listing>>>,
+    pub cache: Arc<Mutex<VecDeque<Post>>>,
+    db: PgConnection,
 }
 
 impl<SRC> UserAggregator<SRC>
 where
-    SRC: ListingSource + Send + Sync + 'static,
+    SRC: ListingSource,
 {
-    fn new(id: ClientID) -> Self {
-        let (tx, rcv) = channel(10);
-        UserAggregator {
+    fn new(id: ClientID) -> Arc<Mutex<UserAggregator<SRC>>> {
+        let mut aggr = UserAggregator {
             id,
             listings: Default::default(),
-            cache: VecDeque::with_capacity(5),
-            chan: (tx, rcv),
-            curator: None,
+            cache: Arc::new(Mutex::new(VecDeque::with_capacity(5))),
+            db: Self::db_instance(),
+            curator: Curator::from(SRC::default()),
+        };
+        let aggr = Arc::new(Mutex::new(aggr));
+        spawn(Self::listen(aggr.clone()));
+        aggr
+    }
+
+    pub async fn latest(&mut self) -> Vec<Post> {
+        let mut cache_guard = self.cache.lock().await;
+        let mut buf = vec![];
+
+        let cache_len = cache_guard.len();
+        let mut index = 0;
+        while index < cache_len {
+            buf.push(cache_guard.pop_front().unwrap().clone());
+            index += 1;
+        }
+        buf
+    }
+
+    async fn listen(aggr: Arc<Mutex<UserAggregator<SRC>>>) {
+        // TODO: Here is where you at.
+        let mut buf = VecDeque::new();
+        let mut aggr = aggr.lock().await;
+        while let Some(post) = aggr.curator.chan.1.recv().await {
+            // flush buffer every 10 posts
+            if (buf.len() % 2) == 0 {
+                let mut cache_guard = aggr.cache.lock().await;
+                cache_guard.clear();
+                cache_guard.append(&mut buf);
+                break;
+            }
+            buf.push_back(post);
         }
     }
 
-    pub fn add_listing(&mut self, category: Listing) {
-        if self.curator.is_none() {
-            panic!("must attach a Curator to an UserAggregator before calling UserAggregator::add_listing")
-        }
-        let listing = Arc::new(Mutex::new(category));
-        self.curator.as_mut().unwrap().spawn_for(listing);
+    fn db_instance() -> PgConnection {
+        dotenv().ok();
+
+        let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set.");
+        PgConnection::establish(&db_url)
+            .unwrap_or_else(|_| panic!("Error connecting to {}", db_url))
     }
 
-    pub fn attach_curator(&mut self, curator: Curator<SRC>) {
-        self.curator = Some(curator);
+    pub fn save_to_db(&mut self, new_listing: &Listing) -> QueryResult<usize> {
+        let listing = NewlySubscribedListing {
+            user_id: self.id.id(),
+            subreddit: new_listing.subreddit().name(),
+            category: new_listing.tag().to_string(),
+            head_post_id: None,
+        };
+        diesel::insert_into(subscribed_listings::table)
+            .values(listing)
+            .execute(&mut self.db)
+    }
+
+    pub fn add_listing(&mut self, category: Arc<Mutex<Listing>>) {
+        self.listings.push_back(category.clone());
+        self.curator.spawn_for(category);
     }
 }
 
@@ -82,46 +100,45 @@ pub struct AggregatorStore {
     db: PgConnection,
 }
 
+impl Clone for AggregatorStore {
+    fn clone(&self) -> Self {
+        Self {
+            db: Self::db_instance(),
+        }
+    }
+}
+
 impl AggregatorStore {
     pub fn instance() -> Self {
-        use crate::content::*;
-        use crate::schema::botclients::dsl::*;
-
-        // let mut db = Self::db_instance();
-        // let existing_clients = botclients.load::<Client>(&mut db);
-        //
         Self {
             db: Self::db_instance(),
         }
     }
 
     fn db_instance() -> PgConnection {
-        dotenv().ok();
+        dotenv().ok().unwrap();
+
         let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         PgConnection::establish(&database_url)
             .unwrap_or_else(|_| panic!("Error connecting to {}", database_url))
     }
 
-    pub fn find(&mut self, client: ClientID) -> Option<UserAggregator<Api>> {
+    pub async fn find(&mut self, id: ClientID) -> Option<Arc<Mutex<UserAggregator<Api>>>> {
         use crate::content::*;
         use crate::schema::subscribed_listings::dsl::*;
 
         let listings = subscribed_listings
-            .filter(user_id.eq(client.id()))
+            .filter(user_id.eq(id.id()))
             .load::<SubscribedListing>(&mut self.db)
             .expect("error loading subscribed listings.");
 
-        let mut aggregator: UserAggregator<Api> = UserAggregator::new(client);
-        aggregator.attach_curator(Curator::from(Api::from(&reqwest::Client::new())));
+        let aggregator = UserAggregator::new(id);
         for listing in listings {
             let listing = Listing::from(listing.category.as_str(), listing.subreddit.into());
-            aggregator.add_listing(listing);
+            let mut aggregator = aggregator.lock().await;
+            aggregator.add_listing(Arc::new(Mutex::new(listing)));
         }
 
         Some(aggregator)
-    }
-
-    pub fn create(&mut self, client_id: ClientID) -> &mut UserAggregator<Api> {
-        todo!()
     }
 }
