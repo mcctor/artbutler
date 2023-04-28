@@ -1,11 +1,13 @@
 use std::env;
+use std::sync::Arc;
 
 use diesel::prelude::*;
-use diesel::result::DatabaseErrorKind::UniqueViolation;
-use diesel::result::Error;
 use dotenvy::dotenv;
-use log::{error, info};
+use log::warn;
+use tokio::sync::Mutex;
 
+use crate::aggregator::{AggregatorStore, UserAggregator};
+use crate::listings::reddit::Api;
 use crate::schema::botclients;
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -43,6 +45,12 @@ impl BotClient {
     }
 }
 
+impl PartialEq for BotClient {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
 #[derive(Insertable)]
 #[diesel(table_name = botclients)]
 struct NewClient {
@@ -51,85 +59,107 @@ struct NewClient {
     is_user: bool,
 }
 
-impl PartialEq for BotClient {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
 pub struct ClientManager {
     db: PgConnection,
-    existing: Vec<BotClient>,
+    aggr_store: AggregatorStore,
+    pub existing: Vec<Arc<(BotClient, Arc<Mutex<UserAggregator<Api>>>)>>,
 }
 
 impl ClientManager {
-    pub fn instance() -> Self {
-        dotenv().ok();
-        let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-        let db = PgConnection::establish(&database_url)
-            .unwrap_or_else(|_| panic!("Error connecting to {}", database_url));
+    pub async fn instance() -> ConnectionResult<Self> {
+        dotenv().ok().unwrap();
 
-        Self {
+        let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let db = PgConnection::establish(&database_url)?;
+        let mut cli_mgr = Self {
             db,
+            aggr_store: AggregatorStore::instance(),
             existing: vec![],
-        }
+        };
+        cli_mgr
+            .load_all()
+            .await
+            .expect("Failed to load all clients");
+
+        Ok(cli_mgr)
     }
 
-    pub fn add_new_user(
+    pub async fn add_new_user(
         &mut self,
         id: ClientID,
         username: Option<String>,
         is_user: bool,
-    ) -> BotClient {
+    ) -> ConnectionResult<Arc<(BotClient, Arc<Mutex<UserAggregator<Api>>>)>> {
         let cli = BotClient {
             id,
             username,
             is_user,
         };
-        self.save_to_db(&cli);
+        self.flush_to_db(&cli)
+            .unwrap_or_else(|_| warn!("Unable to save client to DB"));
+
+        let aggr = self.aggr_store.find(cli.id).await.unwrap();
+        let cli = Arc::new((cli, aggr));
         self.existing.push(cli.clone());
-        cli
+        Ok(cli)
     }
 
-    pub fn get(&mut self, user: ClientID) -> Option<BotClient> {
+    pub async fn get(
+        &mut self,
+        user: ClientID,
+    ) -> Option<Arc<(BotClient, Arc<Mutex<UserAggregator<Api>>>)>> {
         use crate::botclient::*;
         use crate::schema::botclients::dsl::*;
 
-        let client = botclients.find(user.0).get_result(&mut self.db);
-        if let Ok(cli) = client {
-            self.existing.push(cli);
-            let end = self.existing.len() - 1;
-            return Some(self.existing.get(end).unwrap().clone());
+        let is_existent = self.existing.iter_mut().find(|value| {
+            let cli = &value.0;
+            cli.id == user
+        });
+        if let Some(..) = is_existent {
+            Some(is_existent.unwrap().clone())
+        } else {
+            let cli_result = botclients
+                .find(user.id())
+                .get_result::<BotClient>(&mut self.db);
+
+            if let Ok(cli) = cli_result {
+                let aggr = self.aggr_store.find(cli.id).await.unwrap();
+                let cli = Arc::new((cli, aggr));
+                self.existing.push(cli);
+                let end = self.existing.len() - 1;
+                return Some(self.existing.get(end).unwrap().clone());
+            }
+            None
         }
-        None
     }
 
-    fn save_to_db(&mut self, new_user: &BotClient) {
-        let username = match new_user.username.clone() {
-            None => None,
-            Some(username) => Some(username),
-        };
-        let new_client = NewClient {
-            id: new_user.id.id(),
-            username,
-            is_user: new_user.is_user,
-        };
+    async fn load_all(&mut self) -> QueryResult<()> {
+        use crate::botclient::*;
+        use crate::schema::botclients::dsl::*;
 
-        let res = diesel::insert_into(botclients::table)
-            .values(&new_client)
-            .execute(&mut self.db);
-
-        if let Ok(v) = res {
-            info!("Registered and added new {:?} to database", new_user);
-        } else {
-            if let Some(Error::DatabaseError(kind, _)) = res.err() {
-                if let UniqueViolation = kind {
-                    error!(
-                        "Attempting to register the same client twice {:?}",
-                        new_user
-                    )
-                }
+        self.existing = {
+            let mut buf = vec![];
+            for client in botclients.load::<BotClient>(&mut self.db)? {
+                let aggr = self.aggr_store.find(client.id).await.unwrap();
+                buf.push(Arc::new((client, aggr)));
             }
-        }
+            buf
+        };
+        Ok(())
+    }
+
+    fn flush_to_db(&mut self, new_client: &BotClient) -> QueryResult<()> {
+        let username = new_client.username.clone();
+        let cli_row = NewClient {
+            id: new_client.id.id(),
+            username,
+            is_user: new_client.is_user,
+        };
+
+        diesel::insert_into(botclients::table)
+            .values(&cli_row)
+            .execute(&mut self.db)?;
+
+        Ok(())
     }
 }

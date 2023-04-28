@@ -3,18 +3,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use log::{error, info, warn};
+use tokio::sync::mpsc::Sender;
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
+use tokio::time::{sleep_until, Instant};
 use tokio::{
     spawn,
     sync::mpsc::{channel, Receiver},
 };
-use tokio::sync::mpsc::Sender;
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
-use tokio::time::{Instant, sleep_until};
 
-use crate::{content::Post, listings::reddit::Listing};
 use crate::listings::reddit::{Seek, Subreddit};
 use crate::listings::source::ListingSource;
+use crate::{content::Post, listings::reddit::Listing};
 
 pub const SYNC_INTERVAL_MAX: u64 = 32;
 
@@ -37,7 +37,7 @@ impl Buffer {
     }
 
     fn is_full(&self) -> bool {
-        !(self.buf.len() < self.size)
+        self.buf.len() >= self.size
     }
 
     fn difference(&self, other: VecDeque<Post>) -> Vec<Post> {
@@ -89,7 +89,7 @@ impl<T: ListingSource> Curator<T> {
             api,
             tx,
             listing,
-            SYNC_INTERVAL_DEFAULT as u64,
+            SYNC_INTERVAL_DEFAULT,
         ));
         self.curations.push(task);
     }
@@ -101,7 +101,7 @@ impl<T: ListingSource> Curator<T> {
         mut sync_interval: u64,
     ) {
         let mut timeout_cnt = 0;
-        let mut buffer = Buffer::new(10);
+        let mut buffer = Buffer::new(100);
 
         loop {
             let mut synced_posts = VecDeque::new();
@@ -119,7 +119,6 @@ impl<T: ListingSource> Curator<T> {
                 if posts.is_err() {
                     error!("couldn't retrieve posts: {}", posts.err().unwrap());
                     warn!("Retrying post retrieval in 10s");
-
                     sleep_until(Instant::now() + Duration::from_secs(10)).await;
                     continue;
                 }
@@ -127,7 +126,6 @@ impl<T: ListingSource> Curator<T> {
                 let mut posts = posts.unwrap();
                 {
                     let mut listing_guard = listing.lock().await;
-                    sub = listing_guard.subreddit().clone();
                     match listing_guard.paginator().cursor() {
                         Seek::After { .. } => {
                             synced_posts.append(&mut posts);
@@ -153,7 +151,7 @@ impl<T: ListingSource> Curator<T> {
                     buffer.insert(post.clone());
                     let sent = tx.send(post).await;
                     if sent.is_err() {
-                        continue;
+                        panic!("Channel sender poisoned");
                     }
                 }
 
@@ -199,7 +197,7 @@ impl<T: ListingSource> Curator<T> {
                         buffer.insert(post.clone());
                         let sent = tx.send(post).await;
                         if sent.is_err() {
-                            continue;
+                            panic!("Channel sender poisoned");
                         }
                     }
 
