@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::env;
 use std::sync::Arc;
+use std::time::Duration;
 
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -8,6 +9,7 @@ use dotenvy::dotenv;
 use tokio::spawn;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::{Mutex, MutexGuard};
+use tokio::time::{sleep_until, Instant};
 
 use crate::botclient::ClientID;
 use crate::content::{NewlySubscribedListing, Post};
@@ -29,7 +31,7 @@ where
     SRC: ListingSource,
 {
     fn new(id: ClientID) -> Arc<Mutex<UserAggregator<SRC>>> {
-        let mut aggr = UserAggregator {
+        let aggr = UserAggregator {
             id,
             listings: Default::default(),
             cache: Arc::new(Mutex::new(VecDeque::with_capacity(5))),
@@ -56,17 +58,15 @@ where
 
     async fn listen(aggr: Arc<Mutex<UserAggregator<SRC>>>) {
         // TODO: Here is where you at.
-        let mut buf = VecDeque::new();
-        let mut aggr = aggr.lock().await;
-        while let Some(post) = aggr.curator.chan.1.recv().await {
-            // flush buffer every 10 posts
-            if (buf.len() % 2) == 0 {
+        loop {
+            let mut aggr = aggr.lock().await;
+            if let Some(post) = aggr.curator.chan.1.recv().await {
                 let mut cache_guard = aggr.cache.lock().await;
-                cache_guard.clear();
-                cache_guard.append(&mut buf);
+                cache_guard.push_back(post);
+            } else {
                 break;
             }
-            buf.push_back(post);
+            sleep_until(Instant::now() + Duration::from_secs(2)).await;
         }
     }
 
