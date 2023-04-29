@@ -71,11 +71,11 @@ pub async fn listen_silence_handler(
                 chat_id
             );
 
+            let aggr = client.1.clone();
             let task = async move {
-                let aggr = &client.1;
                 let mut aggr = aggr.lock().await;
-
                 let res = aggr.save_to_db(&listing);
+
                 if let Err(Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) = res {
                     bot.send_message(msg.chat.id, "Already listening to that listing")
                         .await
@@ -85,7 +85,7 @@ pub async fn listen_silence_handler(
                     aggr.add_listing(Arc::new(Mutex::new(listing)));
                 }
 
-                for post in aggr.latest().await {
+                while let Some(post) = aggr.curator.chan.1.recv().await {
                     let url = Url::parse(post.link.as_str()).unwrap();
                     let file = InputFile::url(url);
                     if let Ok(v) = bot
@@ -95,6 +95,8 @@ pub async fn listen_silence_handler(
                         .await
                     {}
                     info!("Forwarded PostID: '{}' to UserID: '{}'", post.id(), chat_id);
+                    let mut cache_guard = aggr.cache.lock().await;
+                    cache_guard.push_back(post);
                 }
             };
             spawn(task);
@@ -115,21 +117,20 @@ pub async fn listen_silence_handler(
 pub async fn init_listing_listeners(bot: Bot) -> Arc<Mutex<ClientManager>> {
     let cli_mgr = ClientManager::instance().await.unwrap();
     let cli_mgr = Arc::new(Mutex::new(cli_mgr));
-    let mgr_guard = cli_mgr.lock().await;
 
-    for listing in &mgr_guard.existing {
+    for listing in &cli_mgr.lock().await.existing {
         let bot = bot.clone();
-        let listing = listing.clone();
+        let aggr = listing.1.clone();
+        let botclient = listing.0.clone();
 
         let task = async move {
             loop {
-                let aggr = &listing.1;
                 let mut aggr = aggr.lock().await;
-                for post in aggr.latest().await {
+                if let Some(post) = aggr.curator.chan.1.recv().await {
                     let url = Url::parse(post.link.as_str()).unwrap();
                     let file = InputFile::url(url);
                     if let Ok(v) = bot
-                        .send_photo(ChatId(listing.0.id()), file)
+                        .send_photo(ChatId(botclient.id()), file)
                         .caption(format!("<i>{}</i>", post.title()))
                         .parse_mode(ParseMode::Html)
                         .await
@@ -137,10 +138,13 @@ pub async fn init_listing_listeners(bot: Bot) -> Arc<Mutex<ClientManager>> {
                     info!(
                         "Forwarded PostID: '{}' to UserID: '{}'",
                         post.id(),
-                        listing.0.id()
+                        botclient.id()
                     );
+                    let mut cache_guard = aggr.cache.lock().await;
+                    cache_guard.push_back(post);
+                } else {
+                    break;
                 }
-                sleep_until(Instant::now() + Duration::from_secs(5)).await;
             }
         };
         spawn(task);

@@ -20,7 +20,7 @@ use crate::schema::subscribed_listings;
 
 pub struct UserAggregator<SRC> {
     id: ClientID,
-    curator: Curator<SRC>,
+    pub curator: Curator<SRC>,
     pub listings: VecDeque<Arc<Mutex<Listing>>>,
     pub cache: Arc<Mutex<VecDeque<Post>>>,
     db: PgConnection,
@@ -30,7 +30,7 @@ impl<SRC> UserAggregator<SRC>
 where
     SRC: ListingSource,
 {
-    fn new(id: ClientID) -> Arc<Mutex<UserAggregator<SRC>>> {
+    fn new(id: ClientID) -> UserAggregator<SRC> {
         let aggr = UserAggregator {
             id,
             listings: Default::default(),
@@ -38,25 +38,10 @@ where
             db: Self::db_instance(),
             curator: Curator::from(SRC::default()),
         };
-        let aggr = Arc::new(Mutex::new(aggr));
-        spawn(Self::listen(aggr.clone()));
         aggr
     }
 
-    pub async fn latest(&mut self) -> Vec<Post> {
-        let mut cache_guard = self.cache.lock().await;
-        let mut buf = vec![];
-
-        let cache_len = cache_guard.len();
-        let mut index = 0;
-        while index < cache_len {
-            buf.push(cache_guard.pop_front().unwrap().clone());
-            index += 1;
-        }
-        buf
-    }
-
-    async fn listen(aggr: Arc<Mutex<UserAggregator<SRC>>>) {
+    pub async fn listen(&self, aggr: Arc<Mutex<UserAggregator<SRC>>>) {
         // TODO: Here is where you at.
         loop {
             let mut aggr = aggr.lock().await;
@@ -123,7 +108,7 @@ impl AggregatorStore {
             .unwrap_or_else(|_| panic!("Error connecting to {}", database_url))
     }
 
-    pub async fn find(&mut self, id: ClientID) -> Option<Arc<Mutex<UserAggregator<Api>>>> {
+    pub async fn find(&mut self, id: ClientID) -> Option<UserAggregator<Api>> {
         use crate::content::*;
         use crate::schema::subscribed_listings::dsl::*;
 
@@ -132,10 +117,10 @@ impl AggregatorStore {
             .load::<SubscribedListing>(&mut self.db)
             .expect("error loading subscribed listings.");
 
-        let aggregator = UserAggregator::new(id);
+        let mut aggregator = UserAggregator::new(id);
+        // spawn needs the UserAggregator, as well as initiating new Listings (too many locks)
         for listing in listings {
             let listing = Listing::from(listing.category.as_str(), listing.subreddit.into());
-            let mut aggregator = aggregator.lock().await;
             aggregator.add_listing(Arc::new(Mutex::new(listing)));
         }
 
