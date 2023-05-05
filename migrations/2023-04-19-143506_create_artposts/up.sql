@@ -1,7 +1,6 @@
 -- Your SQL goes here
 CREATE TABLE artposts (
     id TEXT PRIMARY KEY,
-    link TEXT NOT NULL,
     media_href TEXT NOT NULL,
     title TEXT NOT NULL,
     author TEXT NOT NULL,

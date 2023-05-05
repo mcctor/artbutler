@@ -2,7 +2,7 @@ use diesel::prelude::*;
 use diesel::result::DatabaseErrorKind::UniqueViolation;
 use diesel::result::Error;
 use dotenvy::dotenv;
-use log::{info, warn};
+use log::warn;
 use std::env;
 
 use crate::schema::botclients;

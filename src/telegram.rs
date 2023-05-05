@@ -5,10 +5,12 @@ use crate::curator::Curator;
 use crate::listings::reddit;
 use log::{info, warn};
 
+use crate::artvault::ArtVault;
 use reqwest::{Client, Url};
 use std::sync::Arc;
 use teloxide::payloads::SendPhotoSetters;
 use teloxide::prelude::{Message, Requester, ResponseResult};
+use teloxide::types::CountryCode::AR;
 use teloxide::types::{InputFile, Me, ParseMode};
 use teloxide::Bot;
 use tokio::spawn;
@@ -66,14 +68,23 @@ pub async fn listen_silence_handler(
                 user.add_listing(listing);
 
                 while let Some(post) = user.curator.as_mut().unwrap().chan.1.recv().await {
-                    let url = Url::parse(post.link.as_str()).unwrap();
+                    let mut vault = ArtVault::instance();
+                    let is_post = vault.fetch(post.id());
+                    if is_post.is_some() {
+                        continue;
+                    }
+
+                    let url = Url::parse(post.media_href.as_str()).unwrap();
                     let file = InputFile::url(url);
-                    if let Ok(v) = bot
+
+                    if let Ok(_) = bot
                         .send_photo(msg.chat.id, file)
                         .caption(format!("<i>{}</i>", post.title()))
                         .parse_mode(ParseMode::Html)
                         .await
-                    {}
+                    {
+                        vault.save(&post);
+                    }
                     info!(
                         "Forwarded PostID: '{}' to UserID: '{}'",
                         post.id(),

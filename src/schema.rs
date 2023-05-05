@@ -3,7 +3,6 @@
 diesel::table! {
     artposts (id) {
         id -> Text,
-        link -> Text,
         media_href -> Text,
         title -> Text,
         author -> Text,

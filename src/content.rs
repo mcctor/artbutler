@@ -3,10 +3,22 @@ use std::hash::Hasher;
 
 use diesel::prelude::*;
 
+use crate::schema::artposts;
+
+#[derive(Insertable, Debug, Clone, PartialEq)]
+#[diesel(table_name = artposts)]
+pub struct NewPost {
+    pub id: String,
+    pub media_href: String,
+    pub title: String,
+    pub author: String,
+    pub ups: i32,
+    pub downs: i32,
+}
+
 #[derive(Queryable, Debug, Clone, Eq)]
 pub struct Post {
     pub id: String,
-    pub link: String,
     pub media_href: String,
     pub title: String,
     pub author: String,
@@ -25,7 +37,6 @@ impl Post {
     ) -> Self {
         Post {
             id,
-            link,
             media_href,
             title,
             author,
@@ -37,7 +48,6 @@ impl Post {
     pub fn empty() -> Self {
         Post {
             id: String::new(),
-            link: String::new(),
             media_href: String::new(),
             title: String::new(),
             author: String::new(),

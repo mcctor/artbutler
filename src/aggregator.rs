@@ -69,7 +69,7 @@ where
 
     pub fn add_listing(&mut self, category: Listing) {
         if self.curator.is_none() {
-            panic!("must attach a Curator to an UserAggregator before calling UserAggregator::add_listing")
+            panic!("must attach a Curator to an UserAggregator")
         }
         let listing = Arc::new(Mutex::new(category));
         self.curator.as_mut().unwrap().spawn_for(listing);
@@ -86,12 +86,6 @@ pub struct AggregatorStore {
 
 impl AggregatorStore {
     pub fn instance() -> Self {
-        use crate::content::*;
-        use crate::schema::botclients::dsl::*;
-
-        // let mut db = Self::db_instance();
-        // let existing_clients = botclients.load::<Client>(&mut db);
-        //
         Self {
             db: Self::db_instance(),
         }

@@ -10,13 +10,14 @@ use teloxide::dispatching::UpdateFilterExt;
 use teloxide::prelude::{Dispatcher, Update};
 use teloxide::{dptree, Bot};
 
+use crate::auth::ClientManager;
 use crate::content::Post;
 use crate::listings::reddit::Listing::New;
 use auth::ClientID;
 use tokio::sync::Mutex;
-use crate::auth::ClientManager;
 
 mod aggregator;
+mod artvault;
 mod auth;
 mod content;
 mod curator;
@@ -35,7 +36,7 @@ async fn main() {
 
     let store = AggregatorStore::instance();
     let clients = Arc::new(Mutex::new(ClientManager::instance()));
-    
+
     let store = Arc::new(Mutex::new(store));
     let handler =
         dptree::entry().branch(Update::filter_message().endpoint(telegram::listen_silence_handler));
