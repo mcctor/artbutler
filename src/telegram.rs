@@ -1,50 +1,31 @@
-use crate::aggregator::AggregatorStore;
-use crate::auth::{BotClient, ClientID, ClientManager};
-use crate::content::Post;
-use crate::curator::Curator;
-use crate::listings::reddit;
-use log::{info, warn};
-
-use crate::artvault::ArtVault;
-use reqwest::{Client, Url};
 use std::sync::Arc;
+
+use log::{info, warn};
+use reqwest::{Client, Url};
+use teloxide::Bot;
 use teloxide::payloads::SendPhotoSetters;
 use teloxide::prelude::{Message, Requester, ResponseResult};
-use teloxide::types::CountryCode::AR;
 use teloxide::types::{InputFile, Me, ParseMode};
-use teloxide::Bot;
 use tokio::spawn;
 use tokio::sync::Mutex;
 
-use crate::listings::reddit::Listing::New;
-use crate::listings::reddit::{Api, Listing, Pagination, Subreddit};
+use crate::aggregator::AggregatorStore;
+use crate::artvault::ArtVault;
+use crate::auth::ClientManager;
+use crate::curator::Curator;
+use crate::listings::reddit::{Api, Listing, Subreddit};
 use crate::telegram::Command::{Listen, Silence};
 
 pub async fn listen_silence_handler(
     tg_bot: Bot,
-    me: Me,
+    _me: Me,
     msg: Message,
-    mut store: Arc<Mutex<AggregatorStore>>,
-    mut clients: Arc<Mutex<ClientManager>>,
+    store: Arc<Mutex<AggregatorStore>>,
+    clients: Arc<Mutex<ClientManager>>,
 ) -> ResponseResult<()> {
     let msg = msg.clone();
     let bot = tg_bot.clone();
 
-    let mut request_user = None;
-    {
-        let mut cli_manager = clients.lock().await;
-        let v = cli_manager.get(msg.chat.id.0.into());
-        if v.is_none() {
-            cli_manager.add(BotClient {
-                id: msg.chat.id.0.into(),
-                username: msg.from().unwrap().username.clone(),
-                is_user: true,
-            });
-        }
-        request_user = Some(cli_manager.get(msg.chat.id.0.into()).unwrap().clone());
-    }
-
-    // let user_aggr = aggr_store.create(ClientID(msg.from().unwrap().id.0));
     let cmd = Command::parse(&msg);
     if cmd.is_err() {
         warn!(

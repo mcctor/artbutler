@@ -1,8 +1,8 @@
 use std::env;
 
+use diesel::PgConnection;
 use diesel::prelude::*;
 use diesel::result::Error;
-use diesel::PgConnection;
 use dotenvy::dotenv;
 use log::warn;
 

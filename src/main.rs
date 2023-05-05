@@ -1,20 +1,14 @@
-use crate::aggregator::{AggregatorStore, UserAggregator};
-use crate::curator::Curator;
-use crate::listings::reddit::{self, Api, Listing, Pagination, Seek, Subreddit};
-use dotenvy::dotenv;
-
-use log::info;
-use reqwest::Client;
 use std::sync::Arc;
+
+use dotenvy::dotenv;
+use log::info;
 use teloxide::dispatching::UpdateFilterExt;
 use teloxide::prelude::{Dispatcher, Update};
 use teloxide::{dptree, Bot};
-
-use crate::auth::ClientManager;
-use crate::content::Post;
-use crate::listings::reddit::Listing::New;
-use auth::ClientID;
 use tokio::sync::Mutex;
+
+use crate::aggregator::AggregatorStore;
+use crate::auth::ClientManager;
 
 mod aggregator;
 mod artvault;
@@ -25,6 +19,8 @@ mod imgproc;
 mod listings;
 mod schema;
 mod telegram;
+mod botclient;
+mod filters;
 
 #[tokio::main]
 async fn main() {
