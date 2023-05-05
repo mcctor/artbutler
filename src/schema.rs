@@ -20,8 +20,7 @@ diesel::table! {
 }
 
 diesel::table! {
-    subscribed_listings (id) {
-        id -> Int4,
+    subscribed_listings (user_id, subreddit, category) {
         user_id -> Int8,
         subreddit -> Text,
         category -> Text,
@@ -32,8 +31,4 @@ diesel::table! {
 diesel::joinable!(subscribed_listings -> artposts (head_post_id));
 diesel::joinable!(subscribed_listings -> botclients (user_id));
 
-diesel::allow_tables_to_appear_in_same_query!(
-    artposts,
-    botclients,
-    subscribed_listings,
-);
+diesel::allow_tables_to_appear_in_same_query!(artposts, botclients, subscribed_listings,);

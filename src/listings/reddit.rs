@@ -5,8 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use dotenvy::dotenv;
 use log::info;
-
-use reqwest::{Client, Response, Result};
+use reqwest::Response;
 use serde_json::Value;
 use tokio::time::Instant;
 
@@ -14,7 +13,7 @@ use crate::content::Post;
 use crate::listings::reddit::Listing::{Hot, New, Random, Rising, Sort};
 use crate::listings::source::ListingSource;
 
-const REDDIT_USER_AGENT: &str = "windows:com.example.artbutler:v0.0.1 (by /u/mcctor)";
+const REDDIT_USER_AGENT: &str = "windows:com.example.artbutler:v0.3.1 (by /u/mcctor)";
 
 enum AuthTokenAction {
     New,
@@ -29,15 +28,24 @@ pub struct BearerToken {
 
 #[derive(Debug, Clone)]
 pub struct Api {
-    cli: Client,
+    cli: reqwest::Client,
     has_token: Option<BearerToken>,
+}
+
+impl Default for Api {
+    fn default() -> Self {
+        Self {
+            cli: reqwest::Client::new(),
+            has_token: None,
+        }
+    }
 }
 
 #[async_trait]
 impl ListingSource for Api {
-    async fn retrieve_posts(&mut self, listing: &mut Listing) -> Result<VecDeque<Post>> {
+    async fn retrieve_posts(&mut self, listing: &mut Listing) -> reqwest::Result<VecDeque<Post>> {
         let resp = self.request(listing).await?;
-        let posts = self.serialize(resp, listing.result_limit()).await.unwrap();
+        let posts = self.serialize(resp, listing.result_limit()).await?;
         if !posts.is_empty() {
             listing.update_paginator_cache(&posts);
         }
@@ -47,15 +55,19 @@ impl ListingSource for Api {
 }
 
 impl Api {
-    pub fn from(cli: &Client) -> Self {
-        dotenv().ok().unwrap();
+    pub fn from(cli: &reqwest::Client) -> Self {
         Api {
             cli: cli.clone(),
             has_token: None,
         }
     }
 
-    async fn authenticate(&mut self, auth_option: AuthTokenAction) -> Result<&BearerToken> {
+    async fn authenticate(
+        &mut self,
+        auth_option: AuthTokenAction,
+    ) -> reqwest::Result<&BearerToken> {
+        dotenv().ok();
+
         let client_id = env::var("CLIENT_ID").expect("CLIENT_ID not provided");
         let secret = env::var("SECRET").expect("SECRET not provided");
         let username = env::var("USER_NAME").expect("USERNAME not provided");
@@ -108,7 +120,7 @@ impl Api {
         args
     }
 
-    pub async fn authenticate_or_refresh(&mut self) -> Result<&BearerToken> {
+    pub async fn authenticate_or_refresh(&mut self) -> reqwest::Result<&BearerToken> {
         if let Some(t) = self.has_token.as_ref() {
             if Instant::now() > (t.expires - Duration::from_secs(60)) {
                 info!("Reddit API bearer token refreshed");
@@ -120,7 +132,7 @@ impl Api {
         }
     }
 
-    async fn request(&mut self, listing: &Listing) -> Result<Response> {
+    async fn request(&mut self, listing: &Listing) -> reqwest::Result<Response> {
         let req_builder = self.cli.get(listing.endpoint());
         let bearer = self.authenticate_or_refresh().await?;
         let res = req_builder
@@ -132,7 +144,11 @@ impl Api {
         Ok(res)
     }
 
-    async fn serialize(&self, resp: Response, result_count: u64) -> Result<VecDeque<Post>> {
+    async fn serialize(
+        &self,
+        resp: Response,
+        result_count: u64,
+    ) -> reqwest::Result<VecDeque<Post>> {
         let raw_json = resp.json::<Value>().await?;
         let mut posts = VecDeque::new();
         for i in 0..result_count {
@@ -338,7 +354,7 @@ impl Listing {
         match self {
             Random { subreddit } => {
                 href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
-                href_buf.push_str(self.listing_tag());
+                href_buf.push_str(self.tag());
             }
             Sort {
                 subreddit,
@@ -346,7 +362,7 @@ impl Listing {
                 paginator: params,
             } => {
                 href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
-                href_buf.push_str(self.listing_tag());
+                href_buf.push_str(self.tag());
                 href_buf.push_str(self.url_args(params).as_str());
             }
             Hot {
@@ -354,7 +370,7 @@ impl Listing {
                 paginator: params,
             } => {
                 href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
-                href_buf.push_str(self.listing_tag());
+                href_buf.push_str(self.tag());
                 href_buf.push_str(self.url_args(params).as_str());
             }
             New {
@@ -362,7 +378,7 @@ impl Listing {
                 paginator: params,
             } => {
                 href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
-                href_buf.push_str(self.listing_tag());
+                href_buf.push_str(self.tag());
                 href_buf.push_str(self.url_args(params).as_str());
             }
             Rising {
@@ -370,7 +386,7 @@ impl Listing {
                 paginator: params,
             } => {
                 href_buf.push_str(format!("/r/{}/", subreddit.name()).as_str());
-                href_buf.push_str(self.listing_tag());
+                href_buf.push_str(self.tag());
                 href_buf.push_str(self.url_args(params).as_str());
             }
         };
@@ -445,7 +461,7 @@ impl Listing {
         }
     }
 
-    fn listing_tag(&self) -> &'static str {
+    pub fn tag(&self) -> &'static str {
         match self {
             Hot { .. } => "hot",
             New { .. } => "new",
@@ -457,35 +473,30 @@ impl Listing {
 
     fn url_args(&self, pagination_arg: &Pagination) -> String {
         let mut buf = String::new();
+
+        let seek_args = |new_posts: &VecDeque<Post>, direction| {
+            let mut args = String::new();
+            if new_posts.len() == 0 {
+                args.push_str(format!("?{}={}", direction, "null").as_str());
+            } else {
+                let post = new_posts.get(new_posts.len() - 1).unwrap();
+                let cursor_arg = if post.id().is_empty() {
+                    "null".to_string()
+                } else {
+                    format!("t3_{}", post.id().to_string())
+                };
+                args.push_str(format!("?{}={}", direction, cursor_arg).as_str());
+            }
+            args
+        };
+
         match &pagination_arg.cursor_anchor {
             Seek::Back { cache: posts } => {
-                let mut args = String::new();
-                if posts.len() == 0 {
-                    args.push_str(format!("?after={}", "null").as_str());
-                } else {
-                    let post = posts.get(posts.len() - 1).unwrap();
-                    let cursor_arg = if post.id().is_empty() {
-                        "null".to_string()
-                    } else {
-                        format!("t3_{}", post.id().to_string())
-                    };
-                    args.push_str(format!("?after={}", cursor_arg).as_str());
-                }
+                let args = seek_args(posts, "after");
                 buf.push_str(args.as_str())
             }
             Seek::After { cache: posts } => {
-                let mut args = String::new();
-                if posts.len() == 0 {
-                    args.push_str(format!("?before={}", "null").as_str());
-                } else {
-                    let post = posts.get(posts.len() - 1).unwrap();
-                    let cursor_arg = if post.id().is_empty() {
-                        "null".to_string()
-                    } else {
-                        format!("t3_{}", post.id().to_string())
-                    };
-                    args.push_str(format!("?before={}", cursor_arg).as_str());
-                }
+                let args = seek_args(posts, "before");
                 buf.push_str(args.as_str())
             }
         };
@@ -502,6 +513,6 @@ impl Listing {
 
 impl ToString for Listing {
     fn to_string(&self) -> String {
-        self.listing_tag().to_string()
+        self.tag().to_string()
     }
 }

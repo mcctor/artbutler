@@ -8,11 +8,11 @@ fn is_same(img1: &RgbImage, img2: &RgbImage) -> bool {
     let zipped = img1.pixels().zip(img2.pixels());
     let mut diffs: Vec<i32> = vec![];
     for (img1_pix, img2_pix) in zipped.into_iter() {
-        let r1 = *img1_pix.0.get(0).unwrap() as i32;
+        let r1 = *img1_pix.0.first().unwrap() as i32;
         let g1 = *img1_pix.0.get(1).unwrap() as i32;
         let b1 = *img1_pix.0.get(2).unwrap() as i32;
 
-        let r2 = *img2_pix.0.get(0).unwrap() as i32;
+        let r2 = *img2_pix.0.first().unwrap() as i32;
         let g2 = *img2_pix.0.get(1).unwrap() as i32;
         let b2 = *img2_pix.0.get(2).unwrap() as i32;
         diffs.append(&mut vec![r1 - r2, g1 - g2, b1 - b2]);

@@ -13,9 +13,8 @@ use tokio::{
 };
 
 use crate::listings::reddit::{Seek, Subreddit};
-use crate::{content::Post, listings::reddit::Listing};
-
 use crate::listings::source::ListingSource;
+use crate::{content::Post, listings::reddit::Listing};
 
 pub const SYNC_INTERVAL_MAX: u64 = 32;
 
@@ -38,7 +37,7 @@ impl Buffer {
     }
 
     fn is_full(&self) -> bool {
-        !(self.buf.len() < self.size)
+        self.buf.len() >= self.size
     }
 
     fn difference(&self, other: VecDeque<Post>) -> Vec<Post> {
@@ -90,7 +89,7 @@ impl<T: ListingSource> Curator<T> {
             api,
             tx,
             listing,
-            SYNC_INTERVAL_DEFAULT as u64,
+            SYNC_INTERVAL_DEFAULT,
         ));
         self.curations.push(task);
     }
@@ -102,34 +101,39 @@ impl<T: ListingSource> Curator<T> {
         mut sync_interval: u64,
     ) {
         let mut timeout_cnt = 0;
-        let mut buffer = Buffer::new(10);
+        let mut buffer = Buffer::new(100);
 
         loop {
             let mut synced_posts = VecDeque::new();
             let mut sub = "".into();
             {
-                let mut listing_guard = listing.lock().await;
-                sub = listing_guard.subreddit().clone();
+                let mut retrieved_posts = None;
+                {
+                    let mut listing_guard = listing.lock().await;
+                    sub = listing_guard.subreddit().clone();
 
-                let res = api.retrieve_posts(&mut listing_guard).await;
-                if res.is_err() {
-                    error!("couldn't retrieve posts: {}", res.err().unwrap());
+                    retrieved_posts = Some(api.retrieve_posts(&mut listing_guard).await);
+                }
+
+                let posts = retrieved_posts.unwrap();
+                if posts.is_err() {
+                    error!("couldn't retrieve posts: {}", posts.err().unwrap());
                     warn!("Retrying post retrieval in 10s");
-
                     sleep_until(Instant::now() + Duration::from_secs(10)).await;
                     continue;
                 }
 
-                let posts = res.unwrap();
-                match listing_guard.paginator().cursor() {
-                    Seek::After { .. } => {
-                        for post in posts {
-                            synced_posts.push_back(post);
+                let mut posts = posts.unwrap();
+                {
+                    let mut listing_guard = listing.lock().await;
+                    match listing_guard.paginator().cursor() {
+                        Seek::After { .. } => {
+                            synced_posts.append(&mut posts);
                         }
-                    }
-                    Seek::Back { .. } => {
-                        for post in posts {
-                            synced_posts.push_front(post);
+                        Seek::Back { .. } => {
+                            for post in posts {
+                                synced_posts.push_front(post);
+                            }
                         }
                     }
                 }
@@ -147,7 +151,7 @@ impl<T: ListingSource> Curator<T> {
                     buffer.insert(post.clone());
                     let sent = tx.send(post).await;
                     if sent.is_err() {
-                        continue;
+                        panic!("Channel sender poisoned");
                     }
                 }
 
@@ -178,10 +182,8 @@ impl<T: ListingSource> Curator<T> {
                                 deck.push_back(Post::empty());
                                 listing_guard.update_paginator_cache(&deck);
 
-                                let res = api.retrieve_posts(&mut listing_guard).await.unwrap();
-                                for post in res {
-                                    synced_posts.push_back(post);
-                                }
+                                let mut res = api.retrieve_posts(&mut listing_guard).await.unwrap();
+                                synced_posts.append(&mut res);
                             }
                             Seek::Back { .. } => {
                                 info!("Finished polling back, no more posts. Exiting ...");
@@ -195,7 +197,7 @@ impl<T: ListingSource> Curator<T> {
                         buffer.insert(post.clone());
                         let sent = tx.send(post).await;
                         if sent.is_err() {
-                            continue;
+                            panic!("Channel sender poisoned");
                         }
                     }
 
