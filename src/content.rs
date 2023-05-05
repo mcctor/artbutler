@@ -29,7 +29,6 @@ pub struct Post {
 impl Post {
     pub fn new(
         id: String,
-        link: String,
         media_href: String,
         author: String,
         title: String,
@@ -89,7 +88,6 @@ impl std::fmt::Display for Post {
 
 #[derive(Queryable, Debug)]
 pub struct SubscribedListing {
-    pub id: i32,
     pub user_id: i64,
     pub subreddit: String,
     pub category: String,

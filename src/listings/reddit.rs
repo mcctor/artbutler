@@ -192,7 +192,6 @@ impl Api {
 
         Post::new(
             fields.remove("id").unwrap(),
-            post_url,
             fields.remove("url").unwrap(),
             fields.remove("author").unwrap(),
             fields.remove("title").unwrap(),

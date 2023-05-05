@@ -20,8 +20,7 @@ diesel::table! {
 }
 
 diesel::table! {
-    subscribed_listings (id) {
-        id -> Int4,
+    subscribed_listings (user_id, subreddit, category) {
         user_id -> Int8,
         subreddit -> Text,
         category -> Text,

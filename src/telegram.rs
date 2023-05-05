@@ -18,7 +18,6 @@ use crate::telegram::Command::{Listen, Silence};
 
 pub async fn listen_silence_handler(
     tg_bot: Bot,
-    _me: Me,
     msg: Message,
     store: Arc<Mutex<AggregatorStore>>,
     clients: Arc<Mutex<ClientManager>>,

@@ -15,12 +15,11 @@ mod artvault;
 mod auth;
 mod content;
 mod curator;
+mod filters;
 mod imgproc;
 mod listings;
 mod schema;
 mod telegram;
-mod botclient;
-mod filters;
 
 #[tokio::main]
 async fn main() {
