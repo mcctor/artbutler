@@ -1,100 +1,76 @@
 use std::sync::Arc;
-use std::time::Duration;
 
-use diesel::result::{DatabaseErrorKind, Error};
 use log::{info, warn};
-use reqwest::Url;
-use teloxide::payloads::SendPhotoSetters;
-use teloxide::prelude::{ChatId, Message, Requester, ResponseResult};
-use teloxide::types::{InputFile, ParseMode};
+use reqwest::{Client, Url};
 use teloxide::Bot;
+use teloxide::payloads::SendPhotoSetters;
+use teloxide::prelude::{Message, Requester, ResponseResult};
+use teloxide::types::{InputFile, Me, ParseMode};
 use tokio::spawn;
 use tokio::sync::Mutex;
-use tokio::time::{sleep_until, Instant};
 
-use crate::botclient::ClientManager;
-use crate::listings::reddit::{Listing, Subreddit};
+use crate::aggregator::AggregatorStore;
+use crate::artvault::ArtVault;
+use crate::auth::ClientManager;
+use crate::curator::Curator;
+use crate::listings::reddit::{Api, Listing, Subreddit};
 use crate::telegram::Command::{Listen, Silence};
 
 pub async fn listen_silence_handler(
     tg_bot: Bot,
+    _me: Me,
     msg: Message,
-    cli_mgr: Arc<Mutex<ClientManager>>,
+    store: Arc<Mutex<AggregatorStore>>,
+    clients: Arc<Mutex<ClientManager>>,
 ) -> ResponseResult<()> {
     let msg = msg.clone();
     let bot = tg_bot.clone();
-    let chat_id = msg.chat.id.0;
-
-    let mut request_user = None;
-    {
-        let mut cli_manager = cli_mgr.lock().await;
-        if let Some(client) = cli_manager.get(chat_id.into()).await {
-            request_user = Some(client);
-        } else {
-            let client = cli_manager
-                .add_new_user(
-                    chat_id.into(),
-                    {
-                        if let Some(v) = msg.from() {
-                            v.username.clone()
-                        } else {
-                            None
-                        }
-                    },
-                    {
-                        if let Some(v) = msg.from() {
-                            !v.is_bot
-                        } else {
-                            false
-                        }
-                    },
-                )
-                .await
-                .unwrap();
-            request_user = Some(client);
-        }
-    }
-    let client = request_user.unwrap();
-    let user_info = &client.0;
 
     let cmd = Command::parse(&msg);
     if cmd.is_err() {
-        warn!("Non-existent command requested by {:?}", user_info.id());
+        warn!(
+            "Non-existent command requested by Client: {}",
+            msg.from().unwrap().id
+        );
         return Ok(());
     }
-
     match cmd.unwrap() {
         Listen { 0: listing } => {
             info!(
-                "`/listen` command requested by {:?} in ChatID: {}",
-                user_info.id(),
-                chat_id
+                "`/listen` command requested by userid: {} in chatid: {}",
+                msg.from().unwrap().id,
+                msg.chat.id
             );
+            let mut guard = store.lock().await;
+            let mut user = guard.find(msg.chat.id.0.into()).unwrap();
 
             let task = async move {
-                let aggr = &client.1;
-                let mut aggr = aggr.lock().await;
+                user.attach_curator(Curator::from(Api::from(&Client::new())));
+                user.add_listing(listing);
 
-                let res = aggr.save_to_db(&listing);
-                if let Err(Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) = res {
-                    bot.send_message(msg.chat.id, "Already listening to that listing")
-                        .await
-                        .unwrap();
-                    return;
-                } else {
-                    aggr.add_listing(Arc::new(Mutex::new(listing)));
-                }
+                while let Some(post) = user.curator.as_mut().unwrap().chan.1.recv().await {
+                    let mut vault = ArtVault::instance();
+                    let is_post = vault.fetch(post.id());
+                    if is_post.is_some() {
+                        continue;
+                    }
 
-                for post in aggr.latest().await {
-                    let url = Url::parse(post.link.as_str()).unwrap();
+                    let url = Url::parse(post.media_href.as_str()).unwrap();
                     let file = InputFile::url(url);
-                    if let Ok(v) = bot
-                        .send_photo(ChatId(chat_id), file)
+
+                    if let Ok(_) = bot
+                        .send_photo(msg.chat.id, file)
                         .caption(format!("<i>{}</i>", post.title()))
                         .parse_mode(ParseMode::Html)
                         .await
-                    {}
-                    info!("Forwarded PostID: '{}' to UserID: '{}'", post.id(), chat_id);
+                    {
+                        vault.save(&post);
+                    }
+                    info!(
+                        "Forwarded PostID: '{}' to UserID: '{}'",
+                        post.id(),
+                        msg.from().unwrap().id
+                    );
                 }
             };
             spawn(task);
@@ -110,43 +86,6 @@ pub async fn listen_silence_handler(
     }
 
     Ok(())
-}
-
-pub async fn init_listing_listeners(bot: Bot) -> Arc<Mutex<ClientManager>> {
-    let cli_mgr = ClientManager::instance().await.unwrap();
-    let cli_mgr = Arc::new(Mutex::new(cli_mgr));
-    let mgr_guard = cli_mgr.lock().await;
-
-    for listing in &mgr_guard.existing {
-        let bot = bot.clone();
-        let listing = listing.clone();
-
-        let task = async move {
-            loop {
-                let aggr = &listing.1;
-                let mut aggr = aggr.lock().await;
-                for post in aggr.latest().await {
-                    let url = Url::parse(post.link.as_str()).unwrap();
-                    let file = InputFile::url(url);
-                    if let Ok(v) = bot
-                        .send_photo(ChatId(listing.0.id()), file)
-                        .caption(format!("<i>{}</i>", post.title()))
-                        .parse_mode(ParseMode::Html)
-                        .await
-                    {}
-                    info!(
-                        "Forwarded PostID: '{}' to UserID: '{}'",
-                        post.id(),
-                        listing.0.id()
-                    );
-                }
-                sleep_until(Instant::now() + Duration::from_secs(5)).await;
-            }
-        };
-        spawn(task);
-    }
-
-    cli_mgr.clone()
 }
 
 #[derive(Debug)]

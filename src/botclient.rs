@@ -99,7 +99,7 @@ impl ClientManager {
             .unwrap_or_else(|_| warn!("Unable to save client to DB"));
 
         let aggr = self.aggr_store.find(cli.id).await.unwrap();
-        let cli = Arc::new((cli, aggr));
+        let cli = Arc::new((cli, Arc::new(Mutex::new(aggr))));
         self.existing.push(cli.clone());
         Ok(cli)
     }
@@ -124,7 +124,7 @@ impl ClientManager {
 
             if let Ok(cli) = cli_result {
                 let aggr = self.aggr_store.find(cli.id).await.unwrap();
-                let cli = Arc::new((cli, aggr));
+                let cli = Arc::new((cli, Arc::new(Mutex::new(aggr))));
                 self.existing.push(cli);
                 let end = self.existing.len() - 1;
                 return Some(self.existing.get(end).unwrap().clone());
@@ -141,7 +141,7 @@ impl ClientManager {
             let mut buf = vec![];
             for client in botclients.load::<BotClient>(&mut self.db)? {
                 let aggr = self.aggr_store.find(client.id).await.unwrap();
-                buf.push(Arc::new((client, aggr)));
+                buf.push(Arc::new((client, Arc::new(Mutex::new(aggr)))));
             }
             buf
         };

@@ -3,18 +3,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use log::{error, info, warn};
-use tokio::sync::mpsc::Sender;
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
-use tokio::time::{sleep_until, Instant};
 use tokio::{
     spawn,
     sync::mpsc::{channel, Receiver},
 };
+use tokio::sync::mpsc::Sender;
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
+use tokio::time::{Instant, sleep_until};
 
-use crate::listings::reddit::{Seek, Subreddit};
-use crate::listings::source::ListingSource;
 use crate::{content::Post, listings::reddit::Listing};
+use crate::listings::reddit::Seek;
+use crate::listings::source::ListingSource;
 
 pub const SYNC_INTERVAL_MAX: u64 = 32;
 

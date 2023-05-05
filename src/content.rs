@@ -3,12 +3,22 @@ use std::hash::Hasher;
 
 use diesel::prelude::*;
 
-use crate::schema::subscribed_listings;
+use crate::schema::artposts;
+
+#[derive(Insertable, Debug, Clone, PartialEq)]
+#[diesel(table_name = artposts)]
+pub struct NewPost {
+    pub id: String,
+    pub media_href: String,
+    pub title: String,
+    pub author: String,
+    pub ups: i32,
+    pub downs: i32,
+}
 
 #[derive(Queryable, Debug, Clone, Eq)]
 pub struct Post {
     pub id: String,
-    pub link: String,
     pub media_href: String,
     pub title: String,
     pub author: String,
@@ -27,7 +37,6 @@ impl Post {
     ) -> Self {
         Post {
             id,
-            link,
             media_href,
             title,
             author,
@@ -39,7 +48,6 @@ impl Post {
     pub fn empty() -> Self {
         Post {
             id: String::new(),
-            link: String::new(),
             media_href: String::new(),
             title: String::new(),
             author: String::new(),
@@ -81,15 +89,7 @@ impl std::fmt::Display for Post {
 
 #[derive(Queryable, Debug)]
 pub struct SubscribedListing {
-    pub user_id: i64,
-    pub subreddit: String,
-    pub category: String,
-    pub head_post_id: Option<String>,
-}
-
-#[derive(Insertable, Debug)]
-#[diesel(table_name = subscribed_listings)]
-pub struct NewlySubscribedListing {
+    pub id: i32,
     pub user_id: i64,
     pub subreddit: String,
     pub category: String,
