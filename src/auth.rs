@@ -84,10 +84,7 @@ impl ClientManager {
     }
 
     pub fn add(&mut self, new_user: BotClient) {
-        let username = match new_user.username {
-            None => None,
-            Some(username) => Some(username),
-        };
+        let username = new_user.username;
         let new_client = NewClient {
             id: new_user.id.id(),
             username,
