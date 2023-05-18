@@ -2,19 +2,78 @@ use std::sync::Arc;
 
 use log::{info, warn};
 use reqwest::{Client, Url};
-use teloxide::Bot;
+use teloxide::macros::BotCommands;
 use teloxide::payloads::SendPhotoSetters;
+use teloxide::prelude::*;
 use teloxide::prelude::{Message, Requester, ResponseResult};
 use teloxide::types::{InputFile, Me, ParseMode};
+use teloxide::Bot;
 use tokio::spawn;
 use tokio::sync::Mutex;
 
 use crate::aggregator::AggregatorStore;
 use crate::artvault::ArtVault;
-use crate::auth::ClientManager;
+use crate::auth::{BotClient, ClientID, ClientManager};
 use crate::curator::Curator;
 use crate::listings::reddit::{Api, Listing, Subreddit};
 use crate::telegram::Command::{Listen, Silence};
+
+#[derive(BotCommands, Clone)]
+#[command(rename_rule = "lowercase", description = "ConfCommand")]
+pub enum ConfCommand {
+    #[command(description = "initialize bot")]
+    Start,
+
+    #[command(description = "shows help")]
+    Help,
+
+    #[command(description = "user settings")]
+    Settings,
+}
+
+#[derive(BotCommands, Clone)]
+#[command(rename_rule = "lowercase", description = "SubscribeCommand")]
+pub enum SubscribeCommand {
+    #[command(parse_with = "split", description = "generate a number within range")]
+    Listen {
+        subname: String,
+        category: String,
+    },
+    Silence {
+        subname: String,
+    },
+}
+
+pub async fn configuration_cmd_handler(
+    tg_bot: Bot,
+    msg: Message,
+    cmd: ConfCommand,
+) -> Result<(), teloxide::RequestError> {
+    match cmd {
+        ConfCommand::Start => {
+            let mut cli_mgr = ClientManager::instance();
+            if let Some(registered) = cli_mgr.get(ClientID::from(msg.from().unwrap().id.0 as i64)) {
+                tg_bot
+                    .send_message(
+                        ChatId(registered.id.id()),
+                        format!("Welcome back, {}!", registered.username.as_ref().unwrap()),
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                let botclient = BotClient {
+                    id: ClientID::from(msg.from().unwrap().id.0 as i64),
+                    username: msg.from().unwrap().username.clone(),
+                    is_user: !msg.from().unwrap().is_bot,
+                };
+                cli_mgr.add(botclient);
+            }
+            Ok(())
+        }
+        ConfCommand::Help => Ok(()),
+        ConfCommand::Settings => Ok(()),
+    }
+}
 
 pub async fn listen_silence_handler(
     tg_bot: Bot,
