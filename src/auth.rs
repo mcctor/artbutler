@@ -5,6 +5,7 @@ use diesel::result::DatabaseErrorKind::UniqueViolation;
 use diesel::result::Error;
 use dotenvy::dotenv;
 use log::warn;
+use teloxide::types::UserId;
 
 use crate::schema::botclients;
 
@@ -28,6 +29,7 @@ impl From<ClientID> for i64 {
         value.0
     }
 }
+
 
 #[derive(Queryable, Clone, Debug)]
 pub struct BotClient {
