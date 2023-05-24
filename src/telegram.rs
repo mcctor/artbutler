@@ -6,7 +6,7 @@ use teloxide::macros::BotCommands;
 use teloxide::payloads::SendPhotoSetters;
 use teloxide::prelude::*;
 use teloxide::prelude::{Message, Requester, ResponseResult};
-use teloxide::types::{InputFile, Me, ParseMode};
+use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Me, ParseMode};
 use teloxide::Bot;
 use tokio::spawn;
 use tokio::sync::Mutex;
@@ -71,8 +71,78 @@ pub async fn configuration_cmd_handler(
             Ok(())
         }
         ConfCommand::Help => Ok(()),
-        ConfCommand::Settings => Ok(()),
+        ConfCommand::Settings => {
+            let keyboard = make_keyboard();
+            tg_bot
+                .send_message(msg.chat.id, "What do you like: <b><i>0/2</i></b>")
+                .parse_mode(ParseMode::Html)
+                .reply_markup(keyboard)
+                .await?;
+            Ok(())
+        }
     }
+}
+
+/// Creates a keyboard made by buttons in a big column.
+fn make_keyboard() -> InlineKeyboardMarkup {
+    let mut keyboard: Vec<Vec<InlineKeyboardButton>> = vec![];
+    let debian_versions = [
+        "Art  ⚪️",
+        "Photographs  ⚪️",
+        "Architecture  ⚪️",
+        "Memes  ⚪️",
+        "Landscape  ⚪️",
+        "Fantasy  ⚪️",
+        "Skip ⏩",
+    ];
+
+    for versions in debian_versions.chunks(2) {
+        let row = versions
+            .iter()
+            .map(|&version| InlineKeyboardButton::callback(version.to_owned(), version.to_owned()))
+            .collect();
+
+        keyboard.push(row);
+    }
+
+    InlineKeyboardMarkup::new(keyboard)
+}
+
+fn make_selected_keyboard() -> InlineKeyboardMarkup {
+    let mut keyboard: Vec<Vec<InlineKeyboardButton>> = vec![];
+    let debian_versions = [
+        "Art  🔘",
+        "Photographs  ⚪️",
+        "Architecture  ⚪️",
+        "Memes  ⚪️",
+        "Landscape  ⚪️",
+        "Fantasy  ⚪️",
+        "Skip ⏩",
+    ];
+
+    for versions in debian_versions.chunks(2) {
+        let row = versions
+            .iter()
+            .map(|&version| InlineKeyboardButton::callback(version.to_owned(), version.to_owned()))
+            .collect();
+
+        keyboard.push(row);
+    }
+
+    InlineKeyboardMarkup::new(keyboard)
+}
+
+pub async fn callback_query_handler(tg_bot: Bot, query: CallbackQuery) -> ResponseResult<()> {
+    if let Some(version) = query.data {
+        tg_bot.answer_callback_query(query.id).await?;
+        if let Some(Message { id, chat, .. }) = query.message {
+            tg_bot
+                .edit_message_reply_markup(chat.id, id)
+                .reply_markup(make_selected_keyboard())
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 pub async fn listen_silence_handler(

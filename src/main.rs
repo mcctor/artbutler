@@ -33,17 +33,21 @@ async fn main() {
     let store = Arc::new(Mutex::new(AggregatorStore::instance()));
     let clients = Arc::new(Mutex::new(ClientManager::instance()));
 
-    let handler = Update::filter_message()
+    let handler = dptree::entry()
         .branch(
-            dptree::entry()
-                .filter_command::<ConfCommand>()
-                .endpoint(telegram::configuration_cmd_handler),
+            Update::filter_message()
+                .branch(
+                    dptree::entry()
+                        .filter_command::<ConfCommand>()
+                        .endpoint(telegram::configuration_cmd_handler),
+                )
+                .branch(
+                    dptree::entry()
+                        .filter_command::<SubscribeCommand>()
+                        .endpoint(telegram::listen_silence_handler),
+                ),
         )
-        .branch(
-            dptree::entry()
-                .filter_command::<SubscribeCommand>()
-                .endpoint(telegram::listen_silence_handler),
-        );
+        .branch(Update::filter_callback_query().endpoint(telegram::callback_query_handler));
 
     Dispatcher::builder(bot, handler)
         .enable_ctrlc_handler()

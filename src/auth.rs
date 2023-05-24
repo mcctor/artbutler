@@ -30,7 +30,6 @@ impl From<ClientID> for i64 {
     }
 }
 
-
 #[derive(Queryable, Clone, Debug)]
 pub struct BotClient {
     #[diesel(deserialize_as = i64)]
