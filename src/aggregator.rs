@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
-use dotenvy::dotenv;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 
@@ -90,23 +89,21 @@ impl AggregatorStore {
     }
 
     fn db_instance() -> PgConnection {
-        dotenv().ok();
         let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         PgConnection::establish(&database_url)
             .unwrap_or_else(|_| panic!("Error connecting to {}", database_url))
     }
 
-    pub fn find(&mut self, client: ClientID) -> Option<UserAggregator<Api>> {
+    pub fn find<T: ListingSource>(&mut self, client: ClientID) -> Option<UserAggregator<T>> {
         use crate::content::*;
         use crate::schema::subscribed_listings::dsl::*;
-
         let listings = subscribed_listings
             .filter(user_id.eq(client.id()))
             .load::<SubscribedListing>(&mut self.db)
             .expect("error loading subscribed listings.");
 
-        let mut aggregator: UserAggregator<Api> = UserAggregator::new(client);
-        aggregator.attach_curator(Curator::from(Api::from(&reqwest::Client::new())));
+        let mut aggregator: UserAggregator<T> = UserAggregator::new(client);
+        aggregator.attach_curator(Curator::from(T::default()));
         for listing in listings {
             let listing = Listing::from(listing.category.as_str(), listing.subreddit.into());
             aggregator.add_listing(listing);

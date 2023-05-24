@@ -29,10 +29,7 @@ async fn main() {
     info!("Starting command bot...");
 
     let bot = Bot::from_env();
-
     let store = Arc::new(Mutex::new(AggregatorStore::instance()));
-    let clients = Arc::new(Mutex::new(ClientManager::instance()));
-
     let handler = Update::filter_message()
         .branch(
             dptree::entry()
@@ -47,7 +44,7 @@ async fn main() {
 
     Dispatcher::builder(bot, handler)
         .enable_ctrlc_handler()
-        .dependencies(dptree::deps![store, clients])
+        .dependencies(dptree::deps![store])
         .build()
         .dispatch()
         .await;

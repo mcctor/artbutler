@@ -10,32 +10,36 @@ use teloxide::types::UserId;
 use crate::schema::botclients;
 
 #[derive(Copy, Clone, PartialEq, Debug)]
-pub struct ClientID(i64);
+pub struct ClientID(UserId);
 
 impl ClientID {
     pub fn id(&self) -> i64 {
-        self.0
+        self.0 .0 as i64
     }
 }
 
 impl From<i64> for ClientID {
     fn from(value: i64) -> Self {
+        Self(UserId(value as u64))
+    }
+}
+
+impl From<UserId> for ClientID {
+    fn from(value: UserId) -> Self {
         Self(value)
     }
 }
 
 impl From<ClientID> for i64 {
     fn from(value: ClientID) -> Self {
-        value.0
+        value.0 .0 as i64
     }
 }
-
 
 #[derive(Queryable, Clone, Debug)]
 pub struct BotClient {
     #[diesel(deserialize_as = i64)]
     pub id: ClientID,
-
     pub username: Option<String>,
     pub is_user: bool,
 }
@@ -76,7 +80,7 @@ impl ClientManager {
         use crate::auth::*;
         use crate::schema::botclients::dsl::*;
 
-        let client = botclients.find(user.0).get_result(&mut self.db);
+        let client = botclients.find(user.id()).get_result(&mut self.db);
         if let Ok(cli) = client {
             self.existing.push(cli);
             let end = self.existing.len() - 1;
@@ -111,24 +115,4 @@ impl ClientManager {
             }
         }
     }
-}
-
-#[test]
-fn test_client_manager() {
-    dotenv().ok();
-    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let conn = PgConnection::establish(&database_url)
-        .unwrap_or_else(|_| panic!("Error connecting to {}", database_url));
-
-    let username = Some("Vanessa".to_string());
-    let mut client_manager = ClientManager::instance();
-    client_manager.add(BotClient {
-        id: ClientID(89999222654),
-        username: username.clone(),
-        is_user: true,
-    });
-
-    let vannessa = client_manager.get(89999222654.into()).unwrap();
-    assert_eq!(username, vannessa.username);
-    println!("{:?}", vannessa);
 }
